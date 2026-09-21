@@ -124,7 +124,7 @@ class BrapiClient:
             f"{self.cfg.brapi_base_url}/v2/stocks/historical",
             params={
                 "symbols": ticker,
-                "range": f"{days}d",
+                "range": "3mo",
                 "interval": "1d",
             },
         )
