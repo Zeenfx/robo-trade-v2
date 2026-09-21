@@ -69,17 +69,32 @@ class BrapiClient:
         Em producao, isso pode vir de um cache ou endpoint proprietario.
         """
         base = [
-            "PETR4",
-            "VALE3",
-            "ITUB4",
-            "BBDC4",
-            "ABEV3",
-            "B3SA3",
-            "WEGE3",
-            "RENT3",
-            "LREN3",
-            "MGLU3",
-        ]
+    "PETR4",
+    "VALE3",
+    "ITUB4",
+    "BBDC4",
+    "ABEV3",
+    "B3SA3",
+    "WEGE3",
+    "RENT3",
+    "LREN3",
+    "MGLU3",
+    "BBAS3",
+    "PRIO3",
+    "PETR3",
+    "BPAC11",
+    "AXIA3",
+    "SUZB3",
+    "RAIL3",
+    "JBSS3",
+    "VIVT3",
+    "TIMS3",
+    "ELET3",
+    "EQTL3",
+    "RECV3",
+    "CSNA3",
+    "GGBR4",
+]
         eligible = []
         for ticker in base:
             try:
