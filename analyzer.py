@@ -1,98 +1,109 @@
-"""Robô···Trade — análise D1/H1/M15 e definicao do cenario."""
-
-from __future__ import annotations
-
-import logging
+"""Análise técnica para detectar gatilhos de CALL e PUT."""
 from dataclasses import dataclass
-from typing import Sequence
+from enum import Enum
+import logging
 
-from data_fetcher import HistoryCandle, Quote
+import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
-log = logging.getLogger("robo_trade")
+class SinalAtivo(Enum):
+    CALL = "CALL"
+    PUT = "PUT"
+    AGUARDAR = "AGUARDAR"
 
 
 @dataclass
-class Analysis:
-    ticker: str
-    trend_d1: str
-    structure_h1: str
-    trigger_m15: str
-    bias: str  # long, short, lateral
-    region_of_interest: str
-    invalidation: str
-    target: str
-    technical_space: str  # curto, medio, amplo
+class ResultadoAnalise:
+    sinal: SinalAtivo
+    preco_atual: float
+    variacao_pct: float
+    volume_ratio: float
+    rompeu_maxima: bool
+    perdeu_minima: bool
+    tendencia: str
+    momentum: str
+    motivo: str
 
 
-def analyze_ticker(
-    ticker: str,
-    quote: Quote,
-    history: list[HistoryCandle],
-) -> Analysis:
-    """Analise simplificada D1/H1/M15.
-    
-    Em producao, implementar logica completa de tendencia, estrutura,
-    gatilho, regiao de interesse, invalidacao, alvo e espaco tecnico.
-    """
-    if len(history) < 20:
-        return Analysis(
-            ticker=ticker,
-            trend_d1="dados insuficientes",
-            structure_h1="dados insuficientes",
-            trigger_m15="dados insuficientes",
-            bias="lateral",
-            region_of_interest="n/a",
-            invalidation="n/a",
-            target="n/a",
-            technical_space="curto",
+def _ema(serie: pd.Series, periodo: int) -> pd.Series:
+    return serie.ewm(span=periodo, adjust=False).mean()
+
+
+def _rsi(serie: pd.Series, periodo: int = 14) -> pd.Series:
+    delta = serie.diff()
+    ganhos = delta.clip(lower=0).rolling(periodo).mean()
+    perdas = (-delta.clip(upper=0)).rolling(periodo).mean()
+    rs = ganhos / perdas.replace(0, float("nan"))
+    return 100 - (100 / (1 + rs))
+
+
+def detectar_gatilho(
+    df: pd.DataFrame,
+    lookback: int = 20,
+    volume_mult: float = 1.5,
+    ema_short: int = 20,
+    ema_long: int = 50,
+) -> ResultadoAnalise:
+    """Retorna CALL, PUT ou AGUARDAR usando preço, tendência, momentum e volume."""
+    dados = df.copy().dropna(subset=["close", "high", "low", "volume"])
+    if len(dados) < max(ema_long, lookback, 20) + 2:
+        raise ValueError("Dados insuficientes para análise técnica")
+
+    close = dados["close"].astype(float)
+    ema_curta = _ema(close, ema_short)
+    ema_longa = _ema(close, ema_long)
+    macd = _ema(close, 12) - _ema(close, 26)
+    macd_hist = macd - _ema(macd, 9)
+    rsi = _rsi(close)
+    vol_media = dados["volume"].astype(float).rolling(20).mean()
+
+    preco = float(close.iloc[-1])
+    anterior = float(close.iloc[-2])
+    variacao = ((preco / anterior) - 1) * 100 if anterior else 0.0
+    media_volume = float(vol_media.iloc[-1])
+    volume_ratio = float(dados["volume"].iloc[-1]) / media_volume if media_volume > 0 else 0.0
+
+    maxima_anterior = float(dados["high"].iloc[-lookback - 1:-1].max())
+    minima_anterior = float(dados["low"].iloc[-lookback - 1:-1].min())
+    rompeu_maxima = preco > maxima_anterior
+    perdeu_minima = preco < minima_anterior
+
+    alta = preco > float(ema_curta.iloc[-1]) > float(ema_longa.iloc[-1])
+    baixa = preco < float(ema_curta.iloc[-1]) < float(ema_longa.iloc[-1])
+    macd_subindo = float(macd_hist.iloc[-1]) > 0 and float(macd_hist.iloc[-1]) > float(macd_hist.iloc[-2])
+    macd_caindo = float(macd_hist.iloc[-1]) < 0 and float(macd_hist.iloc[-1]) < float(macd_hist.iloc[-2])
+    rsi_atual = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
+
+    if rompeu_maxima and alta and macd_subindo and rsi_atual >= 50 and volume_ratio >= volume_mult:
+        return ResultadoAnalise(
+            SinalAtivo.CALL, preco, variacao, volume_ratio, True, False,
+            "alta", "positivo",
+            f"rompeu máxima de {lookback} períodos; volume {volume_ratio:.1f}x a média; tendência e momentum de alta confirmados",
         )
 
-    closes = [c.close for c in history[-20:]]
-    highs = [c.high for c in history[-20:]]
-    lows = [c.low for c in history[-20:]]
+    if perdeu_minima and baixa and macd_caindo and rsi_atual <= 50 and volume_ratio >= volume_mult:
+        return ResultadoAnalise(
+            SinalAtivo.PUT, preco, variacao, volume_ratio, False, True,
+            "baixa", "negativo",
+            f"perdeu mínima de {lookback} períodos; volume {volume_ratio:.1f}x a média; tendência e momentum de baixa confirmados",
+        )
 
-    avg_close = sum(closes) / len(closes)
-    max_high = max(highs)
-    min_low = min(lows)
+    tendencia = "alta" if alta else "baixa" if baixa else "neutra"
+    momentum = "positivo" if macd_subindo else "negativo" if macd_caindo else "neutro"
+    motivos = []
+    if not rompeu_maxima and not perdeu_minima:
+        motivos.append("sem rompimento ou perda de suporte")
+    if volume_ratio < volume_mult:
+        motivos.append(f"volume abaixo do mínimo ({volume_ratio:.1f}x)")
+    if tendencia == "neutra":
+        motivos.append("tendência sem alinhamento")
+    if momentum == "neutro":
+        motivos.append("momentum sem confirmação")
 
-    if closes[-1] > avg_close and quote.last > max_high:
-        trend_d1 = "alta"
-        bias = "long"
-    elif closes[-1] < avg_close and quote.last < min_low:
-        trend_d1 = "baixa"
-        bias = "short"
-    else:
-        trend_d1 = "lateral"
-        bias = "lateral"
-
-    structure_h1 = f"range {min_low:.2f}–{max_high:.2f}"
-    trigger_m15 = "aguardar confirmacao M15"
-
-    if bias == "long":
-        region_of_interest = f"{min_low:.2f}–{avg_close:.2f}"
-        invalidation = f"abaixo de {min_low:.2f}"
-        target = f"{max_high:.2f}"
-        technical_space = "medio"
-    elif bias == "short":
-        region_of_interest = f"{avg_close:.2f}–{max_high:.2f}"
-        invalidation = f"acima de {max_high:.2f}"
-        target = f"{min_low:.2f}"
-        technical_space = "medio"
-    else:
-        region_of_interest = f"{min_low:.2f}–{max_high:.2f}"
-        invalidation = "fora do range"
-        target = "oposto do range"
-        technical_space = "curto"
-
-    return Analysis(
-        ticker=ticker,
-        trend_d1=trend_d1,
-        structure_h1=structure_h1,
-        trigger_m15=trigger_m15,
-        bias=bias,
-        region_of_interest=region_of_interest,
-        invalidation=invalidation,
-        target=target,
-        technical_space=technical_space,
+    return ResultadoAnalise(
+        SinalAtivo.AGUARDAR, preco, variacao, volume_ratio,
+        rompeu_maxima, perdeu_minima, tendencia, momentum,
+        "; ".join(motivos) or "condições incompletas",
     )
