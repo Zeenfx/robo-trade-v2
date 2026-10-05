@@ -38,17 +38,12 @@ TIMEFRAME = 5
 IV_HISTORY_DAYS = 252
 
 # Filtros de IV Rank e IV Percentile
-# Para compra de opção (opção "barata")
 IV_RANK_MAX_BUY = 40
 IV_PERCENTILE_MAX_BUY = 40
 
-# Para venda de opção (opção "cara") - futuro uso
-IV_RANK_MIN_SELL = 60
-IV_PERCENTILE_MIN_SELL = 60
-
 # Gatilhos no ativo
-LOOKBACK_ROMPIMENTO = 20  # janelas para máxima/mínima
-VOLUME_MULT = 1.5  # volume atual deve ser >= X * média(20)
+LOOKBACK_ROMPIMENTO = 20
+VOLUME_MULT = 1.5
 
 # EMA para tendência
 EMA_SHORT = 20
@@ -59,8 +54,8 @@ OPCAO_DELTA_MIN = 0.35
 OPCAO_DELTA_MAX = 0.55
 OPCAO_EXPIRY_MIN_DIAS = 14
 OPCAO_EXPIRY_MAX_DIAS = 42
-OPCAO_VOLUME_MIN_DIA = 10000  # volume mínimo diário da opção
-OPCAO_OPEN_INTEREST_MIN = 50000  # open interest mínimo
+OPCAO_VOLUME_MIN_DIA = 10000
+OPCAO_OPEN_INTEREST_MIN = 50000
 
 # Controle de ruído
 MINUTOS_ENTRE_ALERTAS_SAME_TICKER = 60
@@ -69,3 +64,6 @@ MINIMA_VARIACAO_PERCENTUAL_PARA_NOVO_ALERTA = 3.0
 # Horário de execução (B3)
 MARKET_START = time(9, 0)
 MARKET_END = time(17, 30)
+
+# VERSÃO DO ROBÔ
+ROBO_VERSION = "2.0-opcoes"
