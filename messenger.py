@@ -1,4 +1,4 @@
-"""Robô···Trade — mensagens do Telegram e atalho Profit."""
+"""Robô Trade — mensagens do Telegram e atalho Profit."""
 
 from __future__ import annotations
 
@@ -22,10 +22,7 @@ class Setup:
 
 
 def build_profit_link(cfg: Config, ticker: str) -> str:
-    """Constroi link ou comando de atalho Profit.
-    
-    Em producao, usar formato real do Profit (ex.: chart, book, etc.).
-    """
+    """Constroi link ou comando de atalho Profit."""
     return f"{cfg.profit_base_url}/chart/{ticker}"
 
 
@@ -52,6 +49,28 @@ def send_telegram_message(
     except requests.RequestException as exc:
         log.error("Erro ao enviar mensagem ao Telegram: %s", exc)
         return False
+
+
+def send_intraday_candidate_alert(
+    cfg: Config,
+    analysis: Analysis,
+    change_pct: float,
+    reason: str,
+) -> bool:
+    """Envia aviso imediato para candidato identificado durante o pregão."""
+    profit_link = build_profit_link(cfg, analysis.ticker)
+    text = (
+        f"<b>{analysis.ticker}</b> — candidato intradiario\n\n"
+        f"Variacao no dia: {change_pct:+.2f}%\n"
+        f"Cenario tecnico: {analysis.bias}\n"
+        f"D1: {analysis.trend_d1}\n"
+        f"H1: {analysis.structure_h1}\n"
+        f"M15: {analysis.trigger_m15}\n\n"
+        f"Motivo: {reason}\n"
+        f"Status: triagem intradiaria; IV ainda nao validada.\n\n"
+        f"Atalho Profit:\n{profit_link}"
+    )
+    return send_telegram_message(cfg, text)
 
 
 def send_message_1(cfg: Config, setup: Setup) -> None:
