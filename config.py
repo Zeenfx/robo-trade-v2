@@ -6,6 +6,10 @@ from datetime import time
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Brapi API
+BRAPI_API_KEY = os.getenv("BRAPI_API_KEY", "")
+BRAPI_BASE_URL = "https://brapi.dev/api/v2"
+
 # Universo de ativos
 UNIVERSE = [
     "PETR4",
