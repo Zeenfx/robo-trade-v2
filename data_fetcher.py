@@ -1,199 +1,188 @@
-"""Robô···Trade — busca de dados de acoes, opcoes e historico via Brapi."""
-
-from __future__ import annotations
-
+"""Busca de dados de preço, IV e cadeia de opções via Brapi."""
 import logging
-from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any
+from datetime import datetime, timedelta
+from typing import List, Optional
 
+import pandas as pd
 import requests
 
-from config import Config
+from config import BRAPI_API_KEY, BRAPI_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 
-log = logging.getLogger("robo_trade")
+def _get_headers() -> dict:
+    """Retorna headers com autenticação Brapi."""
+    headers = {"Authorization": f"Bearer {BRAPI_API_KEY}"}
+    return headers
 
 
-@dataclass
-class Quote:
-    ticker: str
-    last: float
-    open: float
-    high: float
-    low: float
-    close_prev: float
-    volume: float
-    trades: int | None
-    change_pct: float
-    range_today: float
-
-
-@dataclass
-class HistoryCandle:
-    date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-
-
-@dataclass
-class OptionChain:
-    ticker: str
-    underlying: str
-    expiry: date
-    options: list[dict[str, Any]]
-    iv_rank: float | None
-    iv_percentile: float | None
-
-
-class BrapiClient:
-    def __init__(self, cfg: Config) -> None:
-        self.cfg = cfg
-        self.session = requests.Session()
-        if cfg.brapi_token:
-            self.session.headers.update({"Authorization": f"Bearer {cfg.brapi_token}"})
-
-    def _get(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        resp = self.session.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
-
-    def list_eligible_tickers(self) -> list[str]:
-        """Retorna lista de tickers com opcoes listadas.
+def get_price_data(ativo: str, timeframe: int = 5) -> Optional[pd.DataFrame]:
+    """
+    Obtém dados de preço do ativo via Brapi.
+    
+    Retorna DataFrame com colunas: ['open', 'high', 'low', 'close', 'volume']
+    """
+    # Brapi: dados diários (para intraday, usar outro endpoint se disponível)
+    url = f"{BRAPI_BASE_URL}/stocks/{ativo}.SA"
+    params = {"period": "3mo"}  # últimos 3 meses
+    
+    try:
+        response = requests.get(url, headers=_get_headers(), params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
         
-        Como a Brapi nao tem endpoint publico de 'todos os ativos com opcoes',
-        usamos uma lista base e filtramos por disponibilidade de dados.
-        Em producao, isso pode vir de um cache ou endpoint proprietario.
-        """
-        base = [
-    "PETR4",
-    "VALE3",
-    "PRIO3",
-    "BBAS3",
-    "B3SA3",
-    "BBDC4",
-    "AXIA3",
-    "ITUB4",
-    "BPAC11",
-    "ABEV3",
-    "ITSA4",
-    "MGLU3",
-    "CSNA3",
-    "RENT3",
-    "LREN3",
-    "WEGE3",
-    "SUZB3",
-]
-        eligible = []
-        for ticker in base:
-            try:
-                quote = self.get_quote(ticker)
-                if quote.last > 0:
-                    eligible.append(ticker)
-            except Exception as exc:
-                log.warning("%s indisponivel: %s", ticker, exc)
-        return eligible
+        if "results" not in data or not data["results"]:
+            logger.warning(f"Sem dados de preço para {ativo}")
+            return None
+        
+        df = pd.DataFrame(data["results"])
+        
+        # Renomear colunas
+        df = df.rename(columns={
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+            "date": "date",
+        })
+        
+        df = df[["open", "high", "low", "close", "volume"]]
+        df = df.dropna()
+        df = df.reset_index(drop=True)
+        
+        return df
+    except Exception as e:
+        logger.error(f"Erro ao obter preço de {ativo}: {e}")
+        return None
 
-    def get_quote(self, ticker: str) -> Quote:
-        payload = self._get(f"{self.cfg.brapi_base_url}/quote/{ticker}")
-        results = payload.get("results") or []
-        if not results:
-            raise ValueError(f"Cotacao nao encontrada para {ticker}")
 
-        q = results[0]
-        last = float(q.get("regularMarketPrice") or 0)
-        open_p = float(q.get("regularMarketOpen") or 0)
-        high = float(q.get("regularMarketDayHigh") or 0)
-        low = float(q.get("regularMarketDayLow") or 0)
-        close_prev = float(q.get("regularMarketPreviousClose") or 0)
-        volume = float(q.get("regularMarketVolume") or 0)
-        trades = q.get("regularMarketNumTrades")
-        change_pct = float(q.get("regularMarketChangePercent") or 0)
-
-        return Quote(
-            ticker=ticker,
-            last=last,
-            open=open_p,
-            high=high,
-            low=low,
-            close_prev=close_prev,
-            volume=volume,
-            trades=trades,
-            change_pct=change_pct,
-            range_today=max(0, high - low),
-        )
-
-    def get_history(self, ticker: str, days: int = 60) -> list[HistoryCandle]:
-        payload = self._get(
-            f"{self.cfg.brapi_base_url}/v2/stocks/historical",
-            params={
-                "symbols": ticker,
-                "range": "3mo",
-                "interval": "1d",
-            },
-        )
-        results = payload.get("results") or []
-        if not results:
+def get_iv_history(ativo: str, days: int = 252) -> List[float]:
+    """
+    Obtém histórico de IV (volatilidade implícita) via Brapi.
+    
+    Retorna lista de IV dos últimos `days` dias.
+    """
+    url = f"{BRAPI_BASE_URL}/options/analytics/history"
+    params = {
+        "underlying": ativo,
+        "days": days,
+    }
+    
+    try:
+        response = requests.get(url, headers=_get_headers(), params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if "results" not in data or not data["results"]:
+            logger.warning(f"Sem dados de IV para {ativo}")
             return []
-
-        first = results[0]
-        hist = first.get("historicalDataPrice") or []
-        candles = []
-        for item in hist[-days:]:
-            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
-            candles.append(
-                HistoryCandle(
-                    date=d,
-                    open=float(item.get("open", 0)),
-                    high=float(item.get("high", 0)),
-                    low=float(item.get("low", 0)),
-                    close=float(item.get("close", 0)),
-                    volume=float(item.get("volume", 0)),
-                )
-            )
-        return candles
-
-    def get_option_chain(self, ticker: str) -> OptionChain | None:
-        """Retorna cadeia de opcoes EOD e IV Rank/Percentile.
         
-        A Brapi Pro oferece endpoints de opcoes; aqui simulamos a estrutura.
-        Em producao, usar endpoint real: /options/{ticker} ou similar.
-        """
-        try:
-            payload = self._get(
-                f"{self.cfg.brapi_base_url}/options/{ticker}",
-                params={"type": "both"},
-            )
-        except Exception as exc:
-            log.warning("Opcoes nao disponiveis para %s: %s", ticker, exc)
-            return None
+        # Extrair IV de cada dia
+        iv_history = []
+        for item in data["results"]:
+            iv = item.get("impliedVolatility")
+            if iv is not None:
+                iv_history.append(iv * 100)  # converter para %
+        
+        return iv_history
+    except Exception as e:
+        logger.error(f"Erro ao obter IV de {ativo}: {e}")
+        return []
 
-        results = payload.get("results") or []
-        if not results:
-            return None
 
-        first = results[0]
-        options = first.get("options") or []
-        underlying = first.get("underlyingSymbol", ticker)
-        expiry_str = first.get("expirationDate")
-        iv_rank = first.get("ivRank")
-        iv_percentile = first.get("ivPercentile")
-
-        expiry = None
-        if expiry_str:
-            try:
-                expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-            except Exception:
-                expiry = None
-
-        return OptionChain(
-            ticker=ticker,
-            underlying=underlying,
-            expiry=expiry,
-            options=options if isinstance(options, list) else [],
-            iv_rank=float(iv_rank) if iv_rank is not None else None,
-            iv_percentile=float(iv_percentile) if iv_percentile is not None else None,
-        )
+def get_opcoes_cadeia(ativo: str) -> List[dict]:
+    """
+    Obtém cadeia de opções do ativo via Brapi.
+    
+    Retorna lista de dicts com:
+    - ticker: símbolo da opção
+    - tipo: "call" ou "put"
+    - strike: preço de exercício
+    - vencimento: data de expiração
+    - delta: delta da opção
+    - preco: prêmio da opção
+    - volume_dia: volume negociado no dia
+    - open_interest: open interest
+    """
+    # Passo 1: obter vencimentos disponíveis
+    url_exp = f"{BRAPI_BASE_URL}/options/expirations"
+    params_exp = {"underlying": ativo}
+    
+    try:
+        response = requests.get(url_exp, headers=_get_headers(), params=params_exp, timeout=10)
+        response.raise_for_status()
+        data_exp = response.json()
+        
+        if "results" not in data_exp or not data_exp["results"]:
+            logger.warning(f"Sem vencimentos de opções para {ativo}")
+            return []
+        
+        vencimentos = data_exp["results"]
+        
+        # Selecionar vencimento mais próximo (entre 14-42 dias)
+        hoje = datetime.now().date()
+        vencimento_selecionado = None
+        
+        for venc in vencimentos:
+            if isinstance(venc, str):
+                venc_date = datetime.strptime(venc, "%Y-%m-%d").date()
+            else:
+                venc_date = venc
+            
+            dias = (venc_date - hoje).days
+            if 14 <= dias <= 42:
+                vencimento_selecionado = venc
+                break
+        
+        if not vencimento_selecionado:
+            # Pegar o primeiro vencimento disponível
+            vencimento_selecionado = vencimentos[0] if vencimentos else None
+        
+        if not vencimento_selecionado:
+            return []
+        
+        # Passo 2: obter cadeia de opções para o vencimento selecionado
+        url_chain = f"{BRAPI_BASE_URL}/options/chain"
+        params_chain = {
+            "underlying": ativo,
+            "expirationDate": vencimento_selecionado if isinstance(vencimento_selecionado, str) else vencimento_selecionado.strftime("%Y-%m-%d"),
+        }
+        
+        response = requests.get(url_chain, headers=_get_headers(), params=params_chain, timeout=10)
+        response.raise_for_status()
+        data_chain = response.json()
+        
+        if "results" not in data_chain or not data_chain["results"]:
+            logger.warning(f"Sem opções para {ativo} no vencimento {vencimento_selecionado}")
+            return []
+        
+        opcoes = []
+        
+        for op in data_chain["results"]:
+            ticker = op.get("symbol", "")
+            side = op.get("side", "").lower()  # "call" ou "put"
+            strike = op.get("strike", 0)
+            delta = op.get("delta", 0)
+            preco = op.get("lastPrice", op.get("close", 0))
+            volume = op.get("volume", 0)
+            open_interest = op.get("openInterest", op.get("open_interest", 0))
+            
+            opcoes.append({
+                "ticker": ticker,
+                "tipo": side,
+                "strike": strike,
+                "vencimento": vencimento_selecionado if isinstance(vencimento_selecionado, str) else vencimento_selecionado.strftime("%Y-%m-%d"),
+                "delta": abs(delta) if delta else 0.45,  # Brapi pode não ter delta
+                "preco": preco,
+                "volume_dia": volume,
+                "open_interest": open_interest,
+            })
+        
+        logger.info(f"Obtidas {len(opcoes)} opções para {ativo}")
+        return opcoes
+    
+    except Exception as e:
+        logger.error(f"Erro ao obter opções de {ativo}: {e}")
+        return []
