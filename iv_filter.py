@@ -1,76 +1,29 @@
-"""Robô···Trade — filtro de IV Rank e IV Percentile."""
-
-from __future__ import annotations
-
 import logging
-from dataclasses import dataclass
 
-from config import Config
-from data_fetcher import BrapiClient, OptionChain
+logger = logging.getLogger(__name__)
 
 
-log = logging.getLogger("robo_trade")
+def calc_iv_rank(iv_atual, historico):
+    if not historico:
+        return 50.0
+    minimo, maximo = min(historico), max(historico)
+    if maximo == minimo:
+        return 50.0
+    return max(0.0, min(100.0, (iv_atual - minimo) * 100 / (maximo - minimo)))
 
 
-@dataclass
-class IVResult:
-    ticker: str
-    iv_rank: float | None
-    iv_percentile: float | None
-    approved: bool
+def calc_iv_percentile(iv_atual, historico):
+    if not historico:
+        return 50.0
+    return sum(iv < iv_atual for iv in historico) * 100 / len(historico)
 
 
-def check_iv(
-    client: BrapiClient,
-    ticker: str,
-    cfg: Config,
-) -> IVResult:
-    chain = client.get_option_chain(ticker)
-
-    if chain is None:
-        log.warning("%s: cadeia de opcoes indisponivel", ticker)
-        return IVResult(
-            ticker=ticker,
-            iv_rank=None,
-            iv_percentile=None,
-            approved=False,
-        )
-
-    iv_rank = chain.iv_rank
-    iv_percentile = chain.iv_percentile
-
-    if iv_rank is None or iv_percentile is None:
-        log.warning("%s: IV Rank/Percentile indisponiveis", ticker)
-        return IVResult(
-            ticker=ticker,
-            iv_rank=iv_rank,
-            iv_percentile=iv_percentile,
-            approved=False,
-        )
-
-    approved = (
-        iv_rank <= cfg.iv_rank_max
-        and iv_percentile <= cfg.iv_percentile_max
-    )
-
-    if approved:
-        log.info(
-            "%s: IV aprovado (Rank=%.1f%%, Percentile=%.1f%%)",
-            ticker,
-            iv_rank,
-            iv_percentile,
-        )
-    else:
-        log.info(
-            "%s: IV reprovado (Rank=%.1f%%, Percentile=%.1f%%)",
-            ticker,
-            iv_rank,
-            iv_percentile,
-        )
-
-    return IVResult(
-        ticker=ticker,
-        iv_rank=iv_rank,
-        iv_percentile=iv_percentile,
-        approved=approved,
-    )
+def filtro_volatilidade(iv_atual, historico, rank_max=40.0, percentile_max=40.0):
+    if len(historico) < 20:
+        logger.info("Histórico de IV insuficiente")
+        return False, 0.0, 0.0
+    rank = calc_iv_rank(iv_atual, historico)
+    percentile = calc_iv_percentile(iv_atual, historico)
+    aprovado = rank <= rank_max and percentile <= percentile_max
+    logger.info("IV atual=%.2f rank=%.1f%% percentile=%.1f%% aprovado=%s", iv_atual, rank, percentile, aprovado)
+    return aprovado, rank, percentile

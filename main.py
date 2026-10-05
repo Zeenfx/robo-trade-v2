@@ -1,144 +1,52 @@
-"""Robô Trade — orquestracao e agendamento.
-
-Fluxo:
-- Dia D (pregao): varredura → candidatos → análise D1/H1/M15 → registro interno.
-- Dia D (pos-fechamento): atualiza opcoes → calcula IV → filtra.
-- Dia D+1: se setup aprovado (tecnico + IV), envia as duas mensagens no Telegram.
-"""
-
-from __future__ import annotations
-
 import logging
-import os
 from datetime import datetime
 
-from analyzer import analyze_ticker
-from config import Config
-from data_fetcher import BrapiClient
-from database import (
-    init_database,
-    save_analysis,
-    save_candidate,
-    save_iv_result,
-    save_message_log,
-    save_setup,
-)
-from iv_filter import check_iv
-from messenger import (
-    send_intraday_candidate_alert,
-    send_message_1,
-    send_message_2,
-    send_setup_alerts,
-)
-from screener import Candidate, screen_universe
+from analyzer import SinalAtivo, detectar_gatilho
+from config import *
+from data_fetcher import get_iv_history, get_opcoes_cadeia, get_price_data
+from iv_filter import filtro_volatilidade
+from messenger import enviar_telegram, formatar_mensagem
+from screener import selecionar_opcao
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-log = logging.getLogger("robo_trade")
+def processar(ativo):
+    iv_historico = get_iv_history(ativo, IV_HISTORY_DAYS)
+    if not iv_historico:
+        logger.info("%s: sem histórico IV; ignorado", ativo)
+        return
+    aprovado, rank, percentile = filtro_volatilidade(iv_historico[-1], iv_historico, IV_RANK_MAX_BUY, IV_PERCENTILE_MAX_BUY)
+    if not aprovado:
+        logger.info("%s: IV não favorável", ativo)
+        return
+    dados = get_price_data(ativo, TIMEFRAME)
+    if dados is None or len(dados) < 52:
+        logger.info("%s: dados de preço insuficientes", ativo)
+        return
+    analise = detectar_gatilho(dados, LOOKBACK_ROMPIMENTO, VOLUME_MULT, EMA_SHORT, EMA_LONG)
+    if analise.sinal == SinalAtivo.AGUARDAR:
+        logger.info("%s: aguardar — %s", ativo, analise.motivo)
+        return
+    cadeia = get_opcoes_cadeia(ativo)
+    opcao = selecionar_opcao(ativo, analise.sinal.value, analise.preco_atual, cadeia, OPCAO_DELTA_MIN, OPCAO_DELTA_MAX, OPCAO_EXPIRY_MIN_DIAS, OPCAO_EXPIRY_MAX_DIAS, OPCAO_VOLUME_MIN_DIA, OPCAO_OPEN_INTEREST_MIN)
+    if opcao is None:
+        logger.info("%s: sinal %s, mas nenhuma opção líquida compatível", ativo, analise.sinal.value)
+        return
+    mensagem = formatar_mensagem(ativo, analise, rank, percentile, opcao)
+    enviar_telegram(mensagem)
 
 
-def run_intraday_scan(cfg: Config, client: BrapiClient) -> None:
-    """Varredura intradiaria: triagem, análise e alerta imediato."""
-    log.info("Varredura intradiaria iniciada")
-
-    candidates = screen_universe(client, cfg)
-
-    for cand in candidates:
-        save_candidate(cfg.db_path, cand, status="triado")
-        analysis = analyze_ticker(cand.ticker, cand.quote, cand.history)
-        save_analysis(cfg.db_path, analysis)
-
-        sent = send_intraday_candidate_alert(
-            cfg,
-            analysis,
-            cand.quote.change_pct,
-            cand.reason,
-        )
-        save_message_log(
-            cfg.db_path,
-            cand.ticker,
-            "alerta_intradiario_candidato",
-            "enviado" if sent else "falhou",
-        )
-
-        log.info(
-            "%s: candidato (score=%.1f) — %s",
-            cand.ticker,
-            cand.score,
-            cand.reason,
-        )
-        log.info(
-            "%s: alerta intradiario %s",
-            cand.ticker,
-            "enviado" if sent else "nao enviado",
-        )
-
-    log.info("Varredura intradiaria concluida")
-
-
-def run_post_market(cfg: Config, client: BrapiClient) -> None:
-    """Pos-fechamento: atualiza opcoes e calcula IV."""
-    log.info("Processamento pos-fechamento iniciado")
-
-    tickers = client.list_eligible_tickers()
-
-    for ticker in tickers:
-        iv = check_iv(client, ticker, cfg)
-        save_iv_result(cfg.db_path, iv)
-
-    log.info("Processamento pos-fechamento concluido")
-
-
-def run_next_day_dispatch(cfg: Config, client: BrapiClient) -> None:
-    """Dia D+1: envia setups aprovados (tecnico + IV)."""
-    log.info("Dispatch D+1 iniciado")
-
-    tickers = client.list_eligible_tickers()
-
-    for ticker in tickers:
-        iv = check_iv(client, ticker, cfg)
-        if not iv.approved:
-            continue
-
+def main():
+    logger.info("Robô de opções %s iniciado | agora=%s", ROBO_VERSION, datetime.now().isoformat())
+    logger.info("Varredura de oportunidades em opções iniciada")
+    for ativo in UNIVERSE:
         try:
-            quote = client.get_quote(ticker)
-            history = client.get_history(ticker, days=60)
+            processar(ativo)
         except Exception as exc:
-            log.warning("%s: erro ao buscar dados para dispatch: %s", ticker, exc)
-            continue
-
-        analysis = analyze_ticker(ticker, quote, history)
-
-        send_setup_alerts(cfg, type("Setup", (), {"analysis": analysis, "iv": iv})())
-
-        save_setup(cfg.db_path, analysis, iv, messages_sent=True)
-        save_message_log(cfg.db_path, ticker, "aviso_curto", "enviado")
-        save_message_log(cfg.db_path, ticker, "analise_completa", "enviado")
-
-    log.info("Dispatch D+1 concluido")
-
-
-def main() -> None:
-    cfg = Config.from_env()
-    init_database(cfg.db_path)
-    client = BrapiClient(cfg)
-
-    now = datetime.now(cfg.tz)
-    log.info("Robô Trade iniciado | agora=%s", now.isoformat())
-
-    mode = os.getenv("MODE", "intraday").lower()
-
-    if mode == "intraday":
-        run_intraday_scan(cfg, client)
-    elif mode == "post_market":
-        run_post_market(cfg, client)
-    elif mode == "dispatch":
-        run_next_day_dispatch(cfg, client)
-    else:
-        log.warning("MODE desconhecido: %s", mode)
+            logger.exception("%s: erro durante varredura: %s", ativo, exc)
+    logger.info("Varredura de oportunidades em opções concluída")
 
 
 if __name__ == "__main__":
