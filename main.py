@@ -1,4 +1,4 @@
-"""Robô···Trade — orquestracao e agendamento.
+"""Robô Trade — orquestracao e agendamento.
 
 Fluxo:
 - Dia D (pregao): varredura → candidatos → análise D1/H1/M15 → registro interno.
@@ -24,7 +24,12 @@ from database import (
     save_setup,
 )
 from iv_filter import check_iv
-from messenger import send_message_1, send_message_2, send_setup_alerts
+from messenger import (
+    send_intraday_candidate_alert,
+    send_message_1,
+    send_message_2,
+    send_setup_alerts,
+)
 from screener import Candidate, screen_universe
 
 
@@ -36,7 +41,7 @@ log = logging.getLogger("robo_trade")
 
 
 def run_intraday_scan(cfg: Config, client: BrapiClient) -> None:
-    """Varredura intradiaria: triagem e análise, sem enviar mensagens."""
+    """Varredura intradiaria: triagem, análise e alerta imediato."""
     log.info("Varredura intradiaria iniciada")
 
     candidates = screen_universe(client, cfg)
@@ -45,11 +50,30 @@ def run_intraday_scan(cfg: Config, client: BrapiClient) -> None:
         save_candidate(cfg.db_path, cand, status="triado")
         analysis = analyze_ticker(cand.ticker, cand.quote, cand.history)
         save_analysis(cfg.db_path, analysis)
+
+        sent = send_intraday_candidate_alert(
+            cfg,
+            analysis,
+            cand.quote.change_pct,
+            cand.reason,
+        )
+        save_message_log(
+            cfg.db_path,
+            cand.ticker,
+            "alerta_intradiario_candidato",
+            "enviado" if sent else "falhou",
+        )
+
         log.info(
             "%s: candidato (score=%.1f) — %s",
             cand.ticker,
             cand.score,
             cand.reason,
+        )
+        log.info(
+            "%s: alerta intradiario %s",
+            cand.ticker,
+            "enviado" if sent else "nao enviado",
         )
 
     log.info("Varredura intradiaria concluida")
@@ -59,8 +83,6 @@ def run_post_market(cfg: Config, client: BrapiClient) -> None:
     """Pos-fechamento: atualiza opcoes e calcula IV."""
     log.info("Processamento pos-fechamento iniciado")
 
-    # Em producao, buscar todos os candidatos do dia no banco.
-    # Aqui, simplificamos buscando tickers elegiveis novamente.
     tickers = client.list_eligible_tickers()
 
     for ticker in tickers:
@@ -74,8 +96,6 @@ def run_next_day_dispatch(cfg: Config, client: BrapiClient) -> None:
     """Dia D+1: envia setups aprovados (tecnico + IV)."""
     log.info("Dispatch D+1 iniciado")
 
-    # Em producao, consultar no banco os setups aprovados no dia anterior.
-    # Aqui, simulamos buscando tickers e verificando IV novamente.
     tickers = client.list_eligible_tickers()
 
     for ticker in tickers:
@@ -83,7 +103,6 @@ def run_next_day_dispatch(cfg: Config, client: BrapiClient) -> None:
         if not iv.approved:
             continue
 
-        # Recria análise simplificada
         try:
             quote = client.get_quote(ticker)
             history = client.get_history(ticker, days=60)
@@ -93,7 +112,6 @@ def run_next_day_dispatch(cfg: Config, client: BrapiClient) -> None:
 
         analysis = analyze_ticker(ticker, quote, history)
 
-        # Envia as duas mensagens
         send_setup_alerts(cfg, type("Setup", (), {"analysis": analysis, "iv": iv})())
 
         save_setup(cfg.db_path, analysis, iv, messages_sent=True)
@@ -109,10 +127,8 @@ def main() -> None:
     client = BrapiClient(cfg)
 
     now = datetime.now(cfg.tz)
-    log.info("Robô···Trade iniciado | agora=%s", now.isoformat())
+    log.info("Robô Trade iniciado | agora=%s", now.isoformat())
 
-    # Em producao, usar agendamento real (cron, loop, etc.).
-    # Aqui, executamos conforme variavel de ambiente MODE.
     mode = os.getenv("MODE", "intraday").lower()
 
     if mode == "intraday":
