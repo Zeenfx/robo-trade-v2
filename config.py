@@ -1,63 +1,67 @@
-"""Robô···Trade — configuração por variaveis de ambiente."""
-
-from __future__ import annotations
-
+"""Configurações do robô de trade de opções."""
 import os
-from dataclasses import dataclass
-from zoneinfo import ZoneInfo
+from datetime import time
 
+# Telegram
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-@dataclass
-class Config:
-    # Brapi
-    brapi_base_url: str
-    brapi_token: str
+# Universo de ativos
+UNIVERSE = [
+    "PETR4",
+    "VALE3",
+    "PRIO3",
+    "BBAS3",
+    "B3SA3",
+    "BBDC4",
+    "AXIA3",
+    "ITUB4",
+    "BPAC11",
+    "ABEV3",
+    "ITSA4",
+    "MGLU3",
+    "CSNA3",
+    "RENT3",
+    "LREN3",
+    "WEGE3",
+    "SUZB3",
+]
 
-    # Telegram
-    telegram_token: str
-    telegram_chat_id: str
+# Timeframe para análise do ativo (minutos)
+TIMEFRAME = 5
 
-    # Universo e limites
-    max_candidates_per_cycle: int
-    price_change_pct: float
-    gap_pct: float
-    range_multiplier: float
-    volume_multiplier: float
+# Janela histórica para IV (dias)
+IV_HISTORY_DAYS = 252
 
-    # IV
-    iv_rank_max: float
-    iv_percentile_max: float
+# Filtros de IV Rank e IV Percentile
+# Para compra de opção (opção "barata")
+IV_RANK_MAX_BUY = 40
+IV_PERCENTILE_MAX_BUY = 40
 
-    # Horarios
-    tz: ZoneInfo
-    pre_market_run: bool
-    intraday_interval_minutes: int
-    post_market_run: bool
+# Para venda de opção (opção "cara") - futuro uso
+IV_RANK_MIN_SELL = 60
+IV_PERCENTILE_MIN_SELL = 60
 
-    # Database
-    db_path: str
+# Gatilhos no ativo
+LOOKBACK_ROMPIMENTO = 20  # janelas para máxima/mínima
+VOLUME_MULT = 1.5  # volume atual deve ser >= X * média(20)
 
-    # Profit
-    profit_base_url: str
+# EMA para tendência
+EMA_SHORT = 20
+EMA_LONG = 50
 
-    @classmethod
-    def from_env(cls) -> "Config":
-        return cls(
-            brapi_base_url=os.getenv("BRAPI_BASE_URL", "https://brapi.dev/api"),
-            brapi_token=os.getenv("BRAPI_TOKEN", ""),
-            telegram_token=os.getenv("TELEGRAM_TOKEN", ""),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-            max_candidates_per_cycle=int(os.getenv("MAX_CANDIDATES_PER_CYCLE", "5")),
-            price_change_pct=float(os.getenv("PRICE_CHANGE_PCT", "2.5")),
-            gap_pct=float(os.getenv("GAP_PCT", "1.5")),
-            range_multiplier=float(os.getenv("RANGE_MULTIPLIER", "1.8")),
-            volume_multiplier=float(os.getenv("VOLUME_MULTIPLIER", "1.5")),
-            iv_rank_max=float(os.getenv("IV_RANK_MAX", "25")),
-            iv_percentile_max=float(os.getenv("IV_PERCENTILE_MAX", "30")),
-            tz=ZoneInfo("America/Sao_Paulo"),
-            pre_market_run=os.getenv("PRE_MARKET_RUN", "true").lower() == "true",
-            intraday_interval_minutes=int(os.getenv("INTRADAY_INTERVAL_MINUTES", "15")),
-            post_market_run=os.getenv("POST_MARKET_RUN", "true").lower() == "true",
-            db_path=os.getenv("DB_PATH", "robo_trade.db"),
-            profit_base_url=os.getenv("PROFIT_BASE_URL", "https://profit.profit.com.br"),
-        )
+# Seleção de opção
+OPCAO_DELTA_MIN = 0.35
+OPCAO_DELTA_MAX = 0.55
+OPCAO_EXPIRY_MIN_DIAS = 14
+OPCAO_EXPIRY_MAX_DIAS = 42
+OPCAO_VOLUME_MIN_DIA = 10000  # volume mínimo diário da opção
+OPCAO_OPEN_INTEREST_MIN = 50000  # open interest mínimo
+
+# Controle de ruído
+MINUTOS_ENTRE_ALERTAS_SAME_TICKER = 60
+MINIMA_VARIACAO_PERCENTUAL_PARA_NOVO_ALERTA = 3.0
+
+# Horário de execução (B3)
+MARKET_START = time(9, 0)
+MARKET_END = time(17, 30)
