@@ -1,187 +1,134 @@
-"""Robô···Trade — triagem ampla e ranking de candidatos."""
+"""
+Screener de ações para o robô de opções.
+
+Regras:
+- Calcula variação percentual intradiária: (preco_atual - fechamento_anterior) / fechamento_anterior * 100.
+- Considera candidato qualquer ativo com |variação| >= 2.5%.
+- Registra logs detalhados por ativo: ticker, preço atual, fechamento anterior, variação %, decisão e motivo.
+- Não descarta candidato por IV antes do horário definido nas regras de filtro.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Sequence
+from datetime import datetime, time
+from typing import List, Optional, Tuple
 
-from config import Config
-from data_fetcher import BrapiClient, HistoryCandle, Quote
+from config import (
+    ATIVOS,
+    FECHAMENTO_ANTERIOR,
+    PRECOS_ATUAIS,
+    VOLUME_ATUAL,
+    VOLUME_MEDIO,
+)
+from data_fetcher import get_previous_close, get_current_price, get_current_volume, get_average_volume
 
-
-log = logging.getLogger("robo_trade")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Candidate:
+class AtivoInfo:
     ticker: str
-    quote: Quote
-    history: list[HistoryCandle]
-    score: float
-    reason: str
+    preco_atual: float
+    fechamento_anterior: float
+    variacao_pct: float
+    volume_atual: float
+    volume_medio: float
+    eh_candidato: bool
+    motivo: str
 
 
-def mean(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+def calcular_variacao(preco_atual: float, fechamento_anterior: float) -> float:
+    """Calcula variação percentual entre preço atual e fechamento anterior."""
+    if fechamento_anterior <= 0:
+        return 0.0
+    return ((preco_atual - fechamento_anterior) / fechamento_anterior) * 100.0
 
 
-def has_relevant_movement(
-    quote: Quote,
-    history: list[HistoryCandle],
-    cfg: Config,
-) -> bool:
-    # A) Variazione intradiaria >= threshold
-    if abs(quote.change_pct) >= cfg.price_change_pct:
-        return True
-
-    # B) Gap >= threshold
-    if history:
-        prev_close = history[-1].close
-        if prev_close > 0:
-            gap = (quote.open - prev_close) / prev_close * 100
-            if abs(gap) >= cfg.gap_pct:
-                return True
-
-    # C) Range atual >= multiplier * range medio (20 dias)
-    if history:
-        ranges = [c.high - c.low for c in history[-20:]]
-        avg_range = mean([r for r in ranges if r > 0])
-        if avg_range > 0 and quote.range_today >= cfg.range_multiplier * avg_range:
-            return True
-
-    return False
-
-
-def has_participation(
-    quote: Quote,
-    history: list[HistoryCandle],
-    cfg: Config,
-) -> bool:
-    if not history:
-        return False
-
-    avg_volume = mean([c.volume for c in history[-20:] if c.volume > 0])
-    if avg_volume > 0 and quote.volume >= cfg.volume_multiplier * avg_volume:
-        return True
-
-    if quote.trades is not None:
-        avg_trades = mean([c.volume for c in history[-20:] if c.volume > 0])
-        if avg_trades > 0 and quote.trades >= cfg.volume_multiplier * avg_trades:
-            return True
-
-    return False
-
-
-def has_graphical_structure(
-    quote: Quote,
-    history: list[HistoryCandle],
-) -> bool:
-    """Detecta estruturas simples: rompimento, perda, pullback, rejeicao.
-    
-    Implementacao minima; em producao, usar logica mais sofisticada.
+def avaliar_ativo(ticker: str) -> Optional[AtivoInfo]:
     """
-    if len(history) < 20:
-        return False
+    Avalia um único ativo e retorna informações completas.
+    """
+    try:
+        # Obtém dados de mercado
+        preco_atual = get_current_price(ticker)
+        fechamento_anterior = get_previous_close(ticker)
+        volume_atual = get_current_volume(ticker)
+        volume_medio = get_average_volume(ticker)
 
-    closes = [c.close for c in history[-20:]]
-    highs = [c.high for c in history[-20:]]
-    lows = [c.low for c in history[-20:]]
+        if preco_atual is None or fechamento_anterior is None:
+            logger.warning(f"[{ticker}] Dados incompletos: preco={preco_atual}, fechamento={fechamento_anterior}")
+            return None
 
-    max_high = max(highs[:-1])
-    min_low = min(lows[:-1])
+        variacao = calcular_variacao(preco_atual, fechamento_anterior)
 
-    # Rompimento de maxima ou minima de consolidacao
-    if quote.last > max_high or quote.last < min_low:
-        return True
+        # Regra de candidato: |variação| >= 2.5%
+        eh_candidato = abs(variacao) >= 2.5
 
-    # Perda de suporte/resistencia (fechamento abaixo/acima)
-    if closes[-1] < min_low or closes[-1] > max_high:
-        return True
+        if eh_candidato:
+            motivo = f"Variação absoluta >= 2.5% (atual: {variacao:.2f}%)"
+        else:
+            motivo = f"Variação abaixo do threshold (atual: {variacao:.2f}%, necessário: >= 2.5%)"
 
-    return False
-
-
-def score_candidate(
-    quote: Quote,
-    history: list[HistoryCandle],
-    cfg: Config,
-) -> tuple[float, str]:
-    score = 0.0
-    reasons = []
-
-    if abs(quote.change_pct) >= cfg.price_change_pct:
-        score += 3.0
-        reasons.append("movimento relevante")
-
-    if history:
-        prev_close = history[-1].close
-        if prev_close > 0:
-            gap = (quote.open - prev_close) / prev_close * 100
-            if abs(gap) >= cfg.gap_pct:
-                score += 2.0
-                reasons.append("gap relevante")
-
-        ranges = [c.high - c.low for c in history[-20:]]
-        avg_range = mean([r for r in ranges if r > 0])
-        if avg_range > 0 and quote.range_today >= cfg.range_multiplier * avg_range:
-            score += 2.0
-            reasons.append("expansao de range")
-
-        avg_volume = mean([c.volume for c in history[-20:] if c.volume > 0])
-        if avg_volume > 0 and quote.volume >= cfg.volume_multiplier * avg_volume:
-            score += 2.0
-            reasons.append("volume acima da media")
-
-    return score, "; ".join(reasons)
-
-
-def screen_universe(
-    client: BrapiClient,
-    cfg: Config,
-) -> list[Candidate]:
-    tickers = client.list_eligible_tickers()
-    log.info("Universo elegivel: %s", ", ".join(tickers))
-
-    candidates: list[Candidate] = []
-
-    for ticker in tickers:
-        try:
-            quote = client.get_quote(ticker)
-            history = client.get_history(ticker, days=60)
-        except Exception as exc:
-            log.warning("%s: erro ao buscar dados: %s", ticker, exc)
-            continue
-
-        if not has_relevant_movement(quote, history, cfg):
-            continue
-
-        if not has_participation(quote, history, cfg):
-            continue
-
-        if not has_graphical_structure(quote, history):
-            continue
-
-        score, reason = score_candidate(quote, history, cfg)
-        candidates.append(
-            Candidate(
-                ticker=ticker,
-                quote=quote,
-                history=history,
-                score=score,
-                reason=reason,
-            )
+        info = AtivoInfo(
+            ticker=ticker,
+            preco_atual=preco_atual,
+            fechamento_anterior=fechamento_anterior,
+            variacao_pct=variacao,
+            volume_atual=volume_atual or 0.0,
+            volume_medio=volume_medio or 0.0,
+            eh_candidato=eh_candidato,
+            motivo=motivo,
         )
 
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    selected = candidates[: cfg.max_candidates_per_cycle]
-
-    if selected:
-        log.info(
-            "Candidatos selecionados: %s",
-            ", ".join(f"{c.ticker}(score={c.score})" for c in selected),
+        logger.info(
+            f"[{ticker}] preco={preco_atual:.2f} | fechamento={fechamento_anterior:.2f} | "
+            f"variacao={variacao:.2f}% | candidato={eh_candidato} | {motivo}"
         )
+
+        return info
+
+    except Exception as e:
+        logger.exception(f"[{ticker}] Erro ao avaliar ativo: {e}")
+        return None
+
+
+def screener() -> List[AtivoInfo]:
+    """
+    Executa o screener sobre todos os ativos configurados.
+    Retorna lista de AtivoInfo (incluindo não-candidatos para log completo).
+    """
+    logger.info("=== INÍCIO DO SCREENER ===")
+
+    candidatos: List[AtivoInfo] = []
+
+    for ticker in ATIVOS:
+        info = avaliar_ativo(ticker)
+        if info is not None:
+            candidatos.append(info)
+
+    candidatos_reais = [a for a in candidatos if a.eh_candidato]
+    nao_candidatos = [a for a in candidatos if not a.eh_candidato]
+
+    logger.info(f"Total de ativos avaliados: {len(candidatos)}")
+    logger.info(f"Candidatos identificados: {len(candidatos_reais)}")
+    logger.info(f"Não-candidatos: {len(nao_candidatos)}")
+
+    if candidatos_reais:
+        tickers_candidatos = [a.ticker for a in candidatos_reais]
+        logger.info(f"Candidatos: {tickers_candidatos}")
     else:
-        log.info("Nenhum candidato nesta varredura.")
+        logger.info("Nenhum candidato identificado nesta rodada.")
 
-    return selected
+    logger.info("=== FIM DO SCREENER ===")
+
+    return candidatos
+
+
+def obter_candidatos_com_detalhes() -> List[AtivoInfo]:
+    """
+    Função auxiliar para main.py obter apenas os candidatos reais.
+    """
+    todos = screener()
+    return [a for a in todos if a.eh_candidato]
