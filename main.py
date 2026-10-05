@@ -1,111 +1,133 @@
-"""
-Ponto de entrada principal do robô de opções.
-
-Fluxo:
-1. Executa o screener para identificar candidatos (|variação| >= 2.5%).
-2. Para cada candidato, executa análise de cadeia de opções.
-3. Aplica filtro de IV conforme horário definido.
-4. Envia alertas via Telegram para oportunidades validadas.
-"""
-
-from __future__ import annotations
-
+"""Robô de trade de opções - Orquestração principal (v2.0)."""
 import logging
-import schedule
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, time
+from typing import Dict, List, Optional
 
-from config import INTERVALO_RODADA_MINUTOS
-from screener import obter_candidatos_com_detalhes, AtivoInfo
-from analyzer import analisar_cadeia
-from iv_filter import aplicar_filtro_iv
-from messenger import enviar_alerta
+from config import (
+    UNIVERSE,
+    TIMEFRAME,
+    IV_HISTORY_DAYS,
+    IV_RANK_MAX_BUY,
+    IV_PERCENTILE_MAX_BUY,
+    LOOKBACK_ROMPIMENTO,
+    VOLUME_MULT,
+    EMA_SHORT,
+    EMA_LONG,
+    OPCAO_DELTA_MIN,
+    OPCAO_DELTA_MAX,
+    OPCAO_EXPIRY_MIN_DIAS,
+    OPCAO_EXPIRY_MAX_DIAS,
+    OPCAO_VOLUME_MIN_DIA,
+    OPCAO_OPEN_INTEREST_MIN,
+    MINUTOS_ENTRE_ALERTAS_SAME_TICKER,
+    MINIMA_VARIACAO_PERCENTUAL_PARA_NOVO_ALERTA,
+    MARKET_START,
+    MARKET_END,
+    ROBO_VERSION,
+)
+from data_fetcher import get_price_data, get_iv_history, get_opcoes_cadeia
+from iv_filter import filtro_volatilidade
+from analyzer import detectar_gatilho, SinalAtivo
+from screener import selecionar_opcao
+from messenger import formatar_mensagem, enviar_telegram
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
-def executar_rodada() -> None:
-    """Executa uma rodada completa do robô."""
-    logger.info("=== INÍCIO DA RODADA ===")
-    logger.info(f"Horário: {datetime.now().isoformat()}")
+# Controle de ruído
+ultimo_alerta: Dict[str, dict] = {}
 
+
+def deve_enviar_alerta(ativo: str, sinal: str, preco_atual: float) -> bool:
+    agora = datetime.now()
+    if ativo in ultimo_alerta:
+        ultimo = ultimo_alerta[ativo]
+        if ultimo.get("sinal") == sinal:
+            delta_minutos = (agora - ultimo["hora"]).total_seconds() / 60
+            variacao_preco = abs((preco_atual / ultimo["preco"]) - 1) * 100
+            if delta_minutos < MINUTOS_ENTRE_ALERTAS_SAME_TICKER and variacao_preco < MINIMA_VARIACAO_PERCENTUAL_PARA_NOVO_ALERTA:
+                logger.info(f"{ativo}: alerta suprimido")
+                return False
+    return True
+
+
+def atualizar_ultimo_alerta(ativo: str, sinal: str, preco: float):
+    ultimo_alerta[ativo] = {"hora": datetime.now(), "sinal": sinal, "preco": preco}
+
+
+def processar_ativo(ativo: str) -> Optional[dict]:
+    logger.info(f"Processando {ativo}...")
+    
+    # Camada 1: IV
     try:
-        # 1. Screener
-        candidatos: list[AtivoInfo] = obter_candidatos_com_detalhes()
-
-        if not candidatos:
-            logger.info("Nenhum candidato identificado nesta rodada.")
-            logger.info("=== FIM DA RODADA ===")
-            return
-
-        logger.info(f"Candidatos identificados: {[c.ticker for c in candidatos]}")
-
-        # 2. Análise de cadeia de opções para cada candidato
-        oportunidades = []
-        for candidato in candidatos:
-            logger.info(f"Analisando cadeia de opções para {candidato.ticker}...")
-            try:
-            oportunidades_cadeia = analisar_cadeia(candidato)
-                if oportunidades_cadeia:
-                    oportunidades.extend(oportunidades_cadeia)
-                    logger.info(f"{candidato.ticker}: {len(oportunidades_cadeia)} oportunidade(s) encontrada(s).")
-                else:
-                    logger.info(f"{candidato.ticker}: Nenhuma oportunidade válida na cadeia.")
-            except Exception as e:
-                logger.exception(f"[{candidato.ticker}] Erro ao analisar cadeia: {e}")
-
-        if not oportunidades:
-            logger.info("Nenhuma oportunidade válida encontrada nesta rodada.")
-            logger.info("=== FIM DA RODADA ===")
-            return
-
-        # 3. Filtro de IV
-        logger.info(f"Aplicando filtro de IV a {len(oportunidades)} oportunidade(s)...")
-        oportunidades_filtradas = aplicar_filtro_iv(oportunidades)
-
-        if not oportunidades_filtradas:
-            logger.info("Nenhuma oportunidade aprovada no filtro de IV.")
-            logger.info("=== FIM DA RODADA ===")
-            return
-
-        logger.info(f"Oportunidades aprovadas no filtro de IV: {len(oportunidades_filtradas)}")
-
-        # 4. Envio de alertas
-        for opp in oportunidades_filtradas:
-            try:
-                logger.info(f"Enviando alerta para {opp.ticker_base} - {opp.simbolo_opcao}...")
-                enviar_alerta(opp)
-                logger.info(f"Alerta enviado com sucesso para {opp.simbolo_opcao}.")
-            except Exception as e:
-                logger.exception(f"[{opp.simbolo_opcao}] Erro ao enviar alerta: {e}")
-
-        logger.info("=== FIM DA RODADA ===")
-
+        iv_historico = get_iv_history(ativo, days=IV_HISTORY_DAYS)
+        iv_atual = iv_historico[-1] if iv_historico else 0
     except Exception as e:
-        logger.exception(f"Erro não tratado na rodada: {e}")
-        logger.info("=== FIM DA RODADA (COM ERRO) ===")
+        logger.error(f"Erro IV {ativo}: {e}")
+        return None
+    
+    aprovado_iv, iv_rank, iv_percentile = filtro_volatilidade(iv_atual, iv_historico, IV_RANK_MAX_BUY, IV_PERCENTILE_MAX_BUY)
+    if not aprovado_iv:
+        logger.info(f"{ativo}: reprovado IV")
+        return None
+    
+    # Camada 2: Gatilho
+    try:
+        df = get_price_data(ativo, timeframe=TIMEFRAME)
+    except Exception as e:
+        logger.error(f"Erro preço {ativo}: {e}")
+        return None
+    
+    if df is None or df.empty or len(df) < 50:
+        logger.warning(f"{ativo}: dados insuficientes")
+        return None
+    
+    analise = detectar_gatilho(df, lookback=LOOKBACK_ROMPIMENTO, volume_mult=VOLUME_MULT, ema_short=EMA_SHORT, ema_long=EMA_LONG)
+    if analise.sinal == SinalAtivo.AGUARDAR:
+        logger.info(f"{ativo}: AGUARDAR")
+        return None
+    
+    # Camada 3: Opção
+    try:
+        cadeia_opcoes = get_opcoes_cadeia(ativo)
+    except Exception as e:
+        logger.error(f"Erro opções {ativo}: {e}")
+        cadeia_opcoes = []
+    
+    opcao = None
+    if cadeia_opcoes:
+        opcao = selecionar_opcao(ativo=ativo, tipo_sinal=analise.sinal.value, preco_ativo=analise.preco_atual, cadeia_opcoes=cadeia_opcoes, delta_min=OPCAO_DELTA_MIN, delta_max=OPCAO_DELTA_MAX, expiry_min_dias=OPCAO_EXPIRY_MIN_DIAS, expiry_max_dias=OPCAO_EXPIRY_MAX_DIAS, volume_min_dia=OPCAO_VOLUME_MIN_DIA, open_interest_min=OPCAO_OPEN_INTEREST_MIN)
+    
+    if not deve_enviar_alerta(ativo, analise.sinal.value, analise.preco_atual):
+        return None
+    
+    return {"ativo": ativo, "analise": analise, "iv_rank": iv_rank, "iv_percentile": iv_percentile, "opcao": opcao}
 
 
-def main() -> None:
-    """Inicializa o agendamento e executa o robô."""
-    logger.info("Iniciando robô de opções v2...")
-
-    # Executa uma rodada imediatamente ao iniciar
-    executar_rodada()
-
-    # Agenda próximas rodadas
-    intervalo = INTERVALO_RODADA_MINUTOS or 5
-    schedule.every(intervalo).minutes.do(executar_rodada)
-
-    logger.info(f"Robô agendado para rodar a cada {intervalo} minutos.")
-
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+def main():
+    logger.info(f"Robô de opções v{ROBO_VERSION} iniciado | agora={datetime.now().isoformat()}")
+    agora = datetime.now().time()
+    if not (MARKET_START <= agora <= MARKET_END):
+        logger.info(f"Fora do horário de mercado")
+        return
+    
+    logger.info("Varredura de opções iniciada")
+    resultados = []
+    for ativo in UNIVERSE:
+        resultado = processar_ativo(ativo)
+        if resultado:
+            resultados.append(resultado)
+    
+    for res in resultados:
+        mensagem = formatar_mensagem(ativo=res["ativo"], analise=res["analise"], iv_rank=res["iv_rank"], iv_percentile=res["iv_percentile"], opcao=res["opcao"])
+        if enviar_telegram(mensagem):
+            atualizar_ultimo_alerta(res["ativo"], res["analise"].sinal.value, res["analise"].preco_atual)
+    
+    logger.info(f"Varredura de opções concluída. {len(resultados)} oportunidade(s).")
 
 
 if __name__ == "__main__":
