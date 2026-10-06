@@ -10,6 +10,7 @@ from dataclasses import dataclass
 class Config:
     BRAPI_TOKEN: str
     ATIVOS: list[str]
+    UNIVERSE: list[str]
     DELTA_ALVO: float
     EXPIRACAO_DIAS: int
     LOTE: int
@@ -23,9 +24,14 @@ def load_config() -> Config:
     ativos_str = os.getenv("ATIVOS", "PETR4;VALE3;BOVA11")
     ativos = [a.strip() for a in ativos_str.split(";") if a.strip()]
 
+    # UNIVERSE = mesmos ativos por padrão; pode ser sobrescrito via env
+    universe_str = os.getenv("UNIVERSE", ativos_str)
+    universe = [a.strip() for a in universe_str.split(";") if a.strip()]
+
     return Config(
         BRAPI_TOKEN=os.getenv("BRAPI_TOKEN", ""),
         ATIVOS=ativos,
+        UNIVERSE=universe,
         DELTA_ALVO=float(os.getenv("DELTA_ALVO", "0.3")),
         EXPIRACAO_DIAS=int(os.getenv("EXPIRACAO_DIAS", "30")),
         LOTE=int(os.getenv("LOTE", "100")),
@@ -35,10 +41,11 @@ def load_config() -> Config:
     )
 
 
-# Compatibilidade: exporta o que o screener importa
+# Compatibilidade: exporta o que o main/screener importam
 _cfg = load_config()
 BRAPI_TOKEN = _cfg.BRAPI_TOKEN
 ATIVOS = _cfg.ATIVOS
+UNIVERSE = _cfg.UNIVERSE
 DELTA_ALVO = _cfg.DELTA_ALVO
 EXPIRACAO_DIAS = _cfg.EXPIRACAO_DIAS
 LOTE = _cfg.LOTE
