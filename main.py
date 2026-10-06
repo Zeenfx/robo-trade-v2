@@ -1,4 +1,4 @@
-"""Ponto de entrada do robô de opções (v2 – com gatilhos)."""
+"""Ponto de entrada do robô de opções (v3 – com Telegram)."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from config import (
     TESTE_MODE,
     UNIVERSE,
 )
+from telegram_client import enviar_sinal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    logger.info("Robô de opções iniciado (v2).")
+    logger.info("Robô de opções iniciado (v3).")
     logger.info("Horário UTC: %s", datetime.now(timezone.utc).isoformat())
     logger.info("MODO=%s, TESTE_MODE=%s", MODO, TESTE_MODE)
     logger.info("ATIVOS=%s", ATIVOS)
@@ -42,7 +43,6 @@ def main() -> None:
     logger.info("HORARIO_INICIO=%s, HORARIO_FIM=%s, INTERVALO_MIN=%s", HORARIO_INICIO, HORARIO_FIM, INTERVALO_MIN)
     logger.info("BRAPI_TOKEN configurado=%s", bool(BRAPI_TOKEN))
 
-    # Tenta detectar gatilho para o primeiro ativo (pode evoluir para loop depois)
     ticker = ATIVOS[0] if ATIVOS else None
     logger.info("Analisando gatilho para %s", ticker)
     sinal: SinalAtivo | None = detectar_gatilho(ticker)
@@ -64,10 +64,12 @@ def main() -> None:
                 sinal.opcao.get("strike"),
                 sinal.opcao.get("lastPrice"),
             )
+        logger.info("Enviando sinal para o Telegram...")
+        enviar_sinal(sinal)
     else:
         logger.info("Nenhum gatilho encontrado para %s nesta execução.", ticker)
 
-    logger.info("Fim da execução (v2).")
+    logger.info("Fim da execução (v3).")
 
 
 if __name__ == "__main__":
