@@ -1,134 +1,96 @@
-"""
-Screener de ações para o robô de opções.
-
-Regras:
-- Calcula variação percentual intradiária: (preco_atual - fechamento_anterior) / fechamento_anterior * 100.
-- Considera candidato qualquer ativo com |variação| >= 2.5%.
-- Registra logs detalhados por ativo: ticker, preço atual, fechamento anterior, variação %, decisão e motivo.
-- Não descarta candidato por IV antes do horário definido nas regras de filtro.
-"""
+"""Screener de opções: seleciona opção por delta aproximado."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from datetime import datetime, time
-from typing import List, Optional, Tuple
+from typing import Any
 
-from config import (
-    ATIVOS,
-    FECHAMENTO_ANTERIOR,
-    PRECOS_ATUAIS,
-    VOLUME_ATUAL,
-    VOLUME_MEDIO,
-)
-from data_fetcher import get_previous_close, get_current_price, get_current_volume, get_average_volume
+from brapi_client import OptionChain, get_option_chain, get_quote
+from config import ATIVOS, DELTA_ALVO, EXPIRACAO_DIAS
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AtivoInfo:
-    ticker: str
-    preco_atual: float
-    fechamento_anterior: float
-    variacao_pct: float
-    volume_atual: float
-    volume_medio: float
-    eh_candidato: bool
-    motivo: str
-
-
-def calcular_variacao(preco_atual: float, fechamento_anterior: float) -> float:
-    """Calcula variação percentual entre preço atual e fechamento anterior."""
-    if fechamento_anterior <= 0:
-        return 0.0
-    return ((preco_atual - fechamento_anterior) / fechamento_anterior) * 100.0
-
-
-def avaliar_ativo(ticker: str) -> Optional[AtivoInfo]:
+def _delta_aproximado(option: dict[str, Any], underlying_price: float) -> float | None:
     """
-    Avalia um único ativo e retorna informações completas.
+    Estima delta de uma opção de forma simplificada:
+
+    - call: delta ≈ N((S - K) / (K * 0.2))  → aqui uso uma aproximação linear
+    - put:  delta ≈ -N(...)
+
+    Como não temos IV confiável sempre, uso uma heurística simples:
+    delta_call ≈ max(0, min(1, 1 - (K / S)))
+    delta_put  ≈ -max(0, min(1, 1 - (S / K)))
     """
     try:
-        # Obtém dados de mercado
-        preco_atual = get_current_price(ticker)
-        fechamento_anterior = get_previous_close(ticker)
-        volume_atual = get_current_volume(ticker)
-        volume_medio = get_average_volume(ticker)
-
-        if preco_atual is None or fechamento_anterior is None:
-            logger.warning(f"[{ticker}] Dados incompletos: preco={preco_atual}, fechamento={fechamento_anterior}")
+        strike = option.get("strike")
+        if strike is None or strike <= 0 or underlying_price <= 0:
             return None
+        kind = option.get("contractSymbol", "").upper()
+        is_call = "C" in kind or "CALL" in kind
 
-        variacao = calcular_variacao(preco_atual, fechamento_anterior)
-
-        # Regra de candidato: |variação| >= 2.5%
-        eh_candidato = abs(variacao) >= 2.5
-
-        if eh_candidato:
-            motivo = f"Variação absoluta >= 2.5% (atual: {variacao:.2f}%)"
+        if is_call:
+            delta = max(0.0, min(1.0, 1.0 - (strike / underlying_price)))
         else:
-            motivo = f"Variação abaixo do threshold (atual: {variacao:.2f}%, necessário: >= 2.5%)"
-
-        info = AtivoInfo(
-            ticker=ticker,
-            preco_atual=preco_atual,
-            fechamento_anterior=fechamento_anterior,
-            variacao_pct=variacao,
-            volume_atual=volume_atual or 0.0,
-            volume_medio=volume_medio or 0.0,
-            eh_candidato=eh_candidato,
-            motivo=motivo,
-        )
-
-        logger.info(
-            f"[{ticker}] preco={preco_atual:.2f} | fechamento={fechamento_anterior:.2f} | "
-            f"variacao={variacao:.2f}% | candidato={eh_candidato} | {motivo}"
-        )
-
-        return info
-
-    except Exception as e:
-        logger.exception(f"[{ticker}] Erro ao avaliar ativo: {e}")
+            delta = -max(0.0, min(1.0, 1.0 - (underlying_price / strike)))
+        return delta
+    except Exception:
         return None
 
 
-def screener() -> List[AtivoInfo]:
+def selecionar_opcao(ticker: str | None = None) -> dict[str, Any] | None:
     """
-    Executa o screener sobre todos os ativos configurados.
-    Retorna lista de AtivoInfo (incluindo não-candidatos para log completo).
+    Seleciona uma opção (call) para o ativo informado (ou o primeiro de ATIVOS)
+    que tenha delta próximo de DELTA_ALVO.
+
+    Retorna um dict com dados da opção e do ativo, ou None se não achar nada.
     """
-    logger.info("=== INÍCIO DO SCREENER ===")
+    underlying = ticker or (ATIVOS[0] if ATIVOS else None)
+    if not underlying:
+        logger.warning("Screener: nenhum ativo para analisar.")
+        return None
 
-    candidatos: List[AtivoInfo] = []
+    chain: OptionChain | None = get_option_chain(underlying)
+    if not chain or not chain.calls:
+        logger.warning("Screener: sem calls para %s", underlying)
+        return None
 
-    for ticker in ATIVOS:
-        info = avaliar_ativo(ticker)
-        if info is not None:
-            candidatos.append(info)
+    quote = get_quote(underlying)
+    if not quote or quote.price is None:
+        logger.warning("Screener: sem cotação para %s", underlying)
+        return None
 
-    candidatos_reais = [a for a in candidatos if a.eh_candidato]
-    nao_candidatos = [a for a in candidatos if not a.eh_candidato]
+    underlying_price = quote.price
+    target = abs(DELTA_ALVO)
+    best = None
+    best_diff = 1.0
 
-    logger.info(f"Total de ativos avaliados: {len(candidatos)}")
-    logger.info(f"Candidatos identificados: {len(candidatos_reais)}")
-    logger.info(f"Não-candidatos: {len(nao_candidatos)}")
+    for opt in chain.calls:
+        delta = _delta_aproximado(opt, underlying_price)
+        if delta is None:
+            continue
+        diff = abs(delta - target)
+        if diff < best_diff:
+            best_diff = diff
+            best = {
+                "option": opt,
+                "underlying": underlying,
+                "underlying_price": underlying_price,
+                "delta_est": delta,
+            }
+        # já está bom o suficiente?
+        if diff < 0.05:
+            break
 
-    if candidatos_reais:
-        tickers_candidatos = [a.ticker for a in candidatos_reais]
-        logger.info(f"Candidatos: {tickers_candidatos}")
-    else:
-        logger.info("Nenhum candidato identificado nesta rodada.")
+    if not best:
+        logger.warning("Screener: nenhuma call com delta próximo de %s em %s", target, underlying)
+        return None
 
-    logger.info("=== FIM DO SCREENER ===")
-
-    return candidatos
-
-
-def obter_candidatos_com_detalhes() -> List[AtivoInfo]:
-    """
-    Função auxiliar para main.py obter apenas os candidatos reais.
-    """
-    todos = screener()
-    return [a for a in todos if a.eh_candidato]
+    logger.info(
+        "Screener: selecionada %s (delta≈%.2f) para %s @ %.2f",
+        best["option"].get("contractSymbol"),
+        best["delta_est"],
+        underlying,
+        underlying_price,
+    )
+    return best
