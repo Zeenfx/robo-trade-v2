@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Sequence
 
-from data_fetcher import Quote
+
 
 
 log = logging.getLogger("robo_trade")
