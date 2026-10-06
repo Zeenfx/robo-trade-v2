@@ -54,7 +54,31 @@ def get_quote(symbol: str) -> QuoteResult | None:
 
 
 def get_option_chain(underlying: str) -> OptionChain | None:
-    """Retorna cadeia de opções de um ativo."""
+    """
+    Retorna cadeia de opções de um ativo.
+
+    Tenta:
+      1) /market/option/{ticker}
+      2) /quote/{ticker}?options=true
+    """
+    # 1) Endpoint específico de opções
+    try:
+        url = f"{BASE_URL}/market/option/{underlying}"
+        resp = requests.get(url, headers=_headers(), timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        # Brapi costuma retornar: {"results": [{"calls":[...], "puts":[...], ...}]}
+        results = data.get("results", [])
+        if results:
+            r = results[0]
+            calls = r.get("calls", []) or []
+            puts = r.get("puts", []) or []
+            logger.debug("Brapi: %d calls e %d puts para %s", len(calls), len(puts), underlying)
+            return OptionChain(underlying=underlying, calls=calls, puts=puts)
+    except Exception as e:
+        logger.debug("Brapi: falha em /market/option/%s: %s", underlying, e)
+
+    # 2) Fallback: ?options=true no quote
     try:
         url = f"{BASE_URL}/quote/{underlying}?options=true"
         resp = requests.get(url, headers=_headers(), timeout=10)
@@ -68,6 +92,7 @@ def get_option_chain(underlying: str) -> OptionChain | None:
         options = r.get("options", {})
         calls = options.get("calls", []) if isinstance(options, dict) else []
         puts = options.get("puts", []) if isinstance(options, dict) else []
+        logger.debug("Brapi (fallback): %d calls e %d puts para %s", len(calls), len(puts), underlying)
         return OptionChain(underlying=underlying, calls=calls, puts=puts)
     except Exception as e:
         logger.warning("Brapi: erro ao buscar cadeia de opções de %s: %s", underlying, e)
