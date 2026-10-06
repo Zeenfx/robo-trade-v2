@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://brapi.dev/api"
 
 
+def _log_json(label: str, data: Any, max_len: int = 2000) -> None:
+    try:
+        txt = json.dumps(data, ensure_ascii=False)
+        if len(txt) > max_len:
+            txt = txt[:max_len] + "... (truncado)"
+    except Exception:
+        txt = str(data)[:max_len]
+    logger.info("Brapi %s: %s", label, txt)
+
+
 @dataclass
 class QuoteResult:
     symbol: str
@@ -41,7 +51,7 @@ def get_quote(symbol: str) -> QuoteResult | None:
         resp = requests.get(url, headers=_headers(), timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        logger.debug("Brapi quote raw (%s): %s", symbol, json.dumps(data, ensure_ascii=False)[:500])
+        _log_json(f"quote/{symbol}", data)
         results = data.get("results", [])
         if not results:
             logger.warning("Brapi: sem resultados para %s", symbol)
@@ -75,9 +85,10 @@ def get_option_chain(underlying: str) -> OptionChain | None:
     for url in candidates:
         try:
             resp = requests.get(url, headers=_headers(), timeout=10)
+            logger.info("Brapi: tentando %s (status=%s)", url, resp.status_code)
             resp.raise_for_status()
             data = resp.json()
-            logger.debug("Brapi option raw (%s): %s", url, json.dumps(data, ensure_ascii=False)[:800])
+            _log_json(f"option raw ({url})", data, max_len=2500)
 
             results = data.get("results", [])
             if not results:
@@ -85,7 +96,6 @@ def get_option_chain(underlying: str) -> OptionChain | None:
                 continue
 
             r = results[0]
-            # Pode vir direto calls/puts ou dentro de options
             calls = r.get("calls") or r.get("options", {}).get("calls") or []
             puts = r.get("puts") or r.get("options", {}).get("puts") or []
 
@@ -95,7 +105,7 @@ def get_option_chain(underlying: str) -> OptionChain | None:
 
             logger.debug("Brapi: calls/puts vazios em %s", url)
         except Exception as e:
-            logger.debug("Brapi: falha em %s: %s", url, e)
+            logger.warning("Brapi: falha em %s: %s", url, e)
 
     logger.warning("Brapi: não conseguiu cadeia de opções para %s em nenhum endpoint", underlying)
     return None
