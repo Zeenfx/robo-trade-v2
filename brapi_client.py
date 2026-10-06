@@ -14,6 +14,7 @@ from config import BRAPI_TOKEN
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://brapi.dev/api"
+OPTIONS_V2_URL = f"{BASE_URL}/v2/options"
 
 
 def _log_json(label: str, data: Any, max_len: int = 2000) -> None:
@@ -65,47 +66,132 @@ def get_quote(symbol: str) -> QuoteResult | None:
         return None
 
 
+def _get_json(url: str) -> dict[str, Any] | None:
+    """Faz uma requisição à Brapi e devolve JSON de objeto."""
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=15)
+        logger.info("Brapi: tentando %s (status=%s)", url, resp.status_code)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict):
+            logger.warning("Brapi: resposta inesperada em %s", url)
+            return None
+        return data
+    except requests.RequestException as e:
+        logger.warning("Brapi: falha em %s: %s", url, e)
+        return None
+
+
+def _extract_expirations(data: dict[str, Any]) -> list[str]:
+    """Extrai datas de vencimento, tolerando os formatos usuais da API."""
+    raw = data.get("expirations") or data.get("results") or data.get("data") or []
+    if isinstance(raw, dict):
+        raw = raw.get("expirations") or raw.get("items") or []
+
+    expirations: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        value = item if isinstance(item, str) else (
+            item.get("expiration") or item.get("expirationDate") or item.get("date")
+        )
+        if value:
+            expirations.append(str(value)[:10])
+    return sorted(set(expirations))
+
+
+def _extract_option_lists(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Extrai calls e puts da resposta da cadeia de opções."""
+    payload = data.get("chain") or data.get("results") or data.get("data") or data
+
+    if isinstance(payload, list):
+        items = payload
+        calls = [item for item in items if isinstance(item, dict) and str(
+            item.get("type") or item.get("optionType") or item.get("side") or ""
+        ).lower() in {"call", "c"}]
+        puts = [item for item in items if isinstance(item, dict) and str(
+            item.get("type") or item.get("optionType") or item.get("side") or ""
+        ).lower() in {"put", "p"}]
+        return calls, puts
+
+    if not isinstance(payload, dict):
+        return [], []
+
+    calls = payload.get("calls") or []
+    puts = payload.get("puts") or []
+    if calls or puts:
+        return (
+            [item for item in calls if isinstance(item, dict)],
+            [item for item in puts if isinstance(item, dict)],
+        )
+
+    items = payload.get("options") or payload.get("items") or payload.get("series") or []
+    if not isinstance(items, list):
+        return [], []
+
+    calls: list[dict[str, Any]] = []
+    puts: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        option_type = str(
+            item.get("type") or item.get("optionType") or item.get("side") or ""
+        ).lower()
+        symbol = str(item.get("symbol") or "").upper()
+
+        if option_type in {"call", "c"} or (
+            not option_type and len(symbol) >= 5 and "A" <= symbol[4] <= "L"
+        ):
+            calls.append(item)
+        elif option_type in {"put", "p"} or (
+            not option_type and len(symbol) >= 5 and "M" <= symbol[4] <= "X"
+        ):
+            puts.append(item)
+
+    return calls, puts
+
+
 def get_option_chain(underlying: str) -> OptionChain | None:
-    """
-    Retorna cadeia de opções de um ativo.
+    """Retorna a cadeia de opções do vencimento mais próximo."""
+    symbol = underlying.upper().replace(".SA", "")
 
-    Tenta:
-      1) /market/option/{ticker}
-      2) /market/option/{ticker}.SA
-      3) /quote/{ticker}?options=true
-      4) /quote/{ticker}.SA?options=true
-    """
-    candidates = [
-        f"{BASE_URL}/market/option/{underlying}",
-        f"{BASE_URL}/market/option/{underlying}.SA",
-        f"{BASE_URL}/quote/{underlying}?options=true",
-        f"{BASE_URL}/quote/{underlying}.SA?options=true",
-    ]
+    expirations_url = f"{OPTIONS_V2_URL}/expirations?underlying={symbol}"
+    expirations_data = _get_json(expirations_url)
+    if not expirations_data:
+        logger.warning("Brapi: não encontrou vencimentos para %s", symbol)
+        return None
 
-    for url in candidates:
-        try:
-            resp = requests.get(url, headers=_headers(), timeout=10)
-            logger.info("Brapi: tentando %s (status=%s)", url, resp.status_code)
-            resp.raise_for_status()
-            data = resp.json()
-            _log_json(f"option raw ({url})", data, max_len=2500)
+    _log_json(f"expirations/{symbol}", expirations_data, max_len=2500)
+    expirations = _extract_expirations(expirations_data)
+    if not expirations:
+        logger.warning("Brapi: resposta sem vencimentos para %s", symbol)
+        return None
 
-            results = data.get("results", [])
-            if not results:
-                logger.debug("Brapi: sem results em %s", url)
-                continue
+    expiration = expirations[0]
+    chain_url = f"{OPTIONS_V2_URL}/chain?underlying={symbol}&expiration={expiration}"
+    chain_data = _get_json(chain_url)
+    if not chain_data:
+        logger.warning(
+            "Brapi: não conseguiu a cadeia de %s para vencimento %s",
+            symbol,
+            expiration,
+        )
+        return None
 
-            r = results[0]
-            calls = r.get("calls") or r.get("options", {}).get("calls") or []
-            puts = r.get("puts") or r.get("options", {}).get("puts") or []
+    _log_json(f"chain/{symbol}/{expiration}", chain_data, max_len=2500)
+    calls, puts = _extract_option_lists(chain_data)
 
-            if calls or puts:
-                logger.info("Brapi: %d calls e %d puts para %s (via %s)", len(calls), len(puts), underlying, url)
-                return OptionChain(underlying=underlying, calls=calls, puts=puts)
+    if not calls and not puts:
+        logger.warning(
+            "Brapi: cadeia vazia para %s no vencimento %s",
+            symbol,
+            expiration,
+        )
+        return None
 
-            logger.debug("Brapi: calls/puts vazios em %s", url)
-        except Exception as e:
-            logger.warning("Brapi: falha em %s: %s", url, e)
-
-    logger.warning("Brapi: não conseguiu cadeia de opções para %s em nenhum endpoint", underlying)
-    return None
+    logger.info(
+        "Brapi: %d calls e %d puts para %s, vencimento %s",
+        len(calls),
+        len(puts),
+        symbol,
+        expiration,
+    )
+    return OptionChain(underlying=symbol, calls=calls, puts=puts)
