@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from analyzer import SinalAtivo
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     logger.info("Robô iniciado (versão mínima de validação).")
-    logger.info("Horário: %s", datetime.utcnow().isoformat() + "Z")
+    logger.info("Horário: %s", datetime.now(timezone.utc).isoformat())
     logger.info("Nenhum gatilho será emitido nesta versão.")
 
 
