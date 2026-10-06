@@ -1,69 +1,47 @@
-"""Configurações do robô de trade de opções."""
+"""Configurações do robô de opções."""
+
+from __future__ import annotations
+
 import os
-from datetime import time
+from dataclasses import dataclass
 
-# Telegram
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Brapi API
-BRAPI_API_KEY = os.getenv("BRAPI_API_KEY", "")
-BRAPI_BASE_URL = "https://brapi.dev/api/v2"
+@dataclass
+class Config:
+    BRAPI_TOKEN: str
+    ATIVOS: list[str]
+    DELTA_ALVO: float
+    EXPIRACAO_DIAS: int
+    LOTE: int
+    LOTE_OPCOES: int
+    STOP_LOSS_PCT: float
+    ALVO_PCT: float
 
-# Universo de ativos
-UNIVERSE = [
-    "PETR4",
-    "VALE3",
-    "PRIO3",
-    "BBAS3",
-    "B3SA3",
-    "BBDC4",
-    "AXIA3",
-    "ITUB4",
-    "BPAC11",
-    "ABEV3",
-    "ITSA4",
-    "MGLU3",
-    "CSNA3",
-    "RENT3",
-    "LREN3",
-    "WEGE3",
-    "SUZB3",
-]
 
-# Timeframe para análise do ativo (minutos)
-TIMEFRAME = 5
+def load_config() -> Config:
+    """Carrega configurações a partir de variáveis de ambiente."""
+    ativos_str = os.getenv("ATIVOS", "PETR4;VALE3;BOVA11")
+    ativos = [a.strip() for a in ativos_str.split(";") if a.strip()]
 
-# Janela histórica para IV (dias)
-IV_HISTORY_DAYS = 252
+    return Config(
+        BRAPI_TOKEN=os.getenv("BRAPI_TOKEN", ""),
+        ATIVOS=ativos,
+        DELTA_ALVO=float(os.getenv("DELTA_ALVO", "0.3")),
+        EXPIRACAO_DIAS=int(os.getenv("EXPIRACAO_DIAS", "30")),
+        LOTE=int(os.getenv("LOTE", "100")),
+        LOTE_OPCOES=int(os.getenv("LOTE_OPCOES", "1")),
+        STOP_LOSS_PCT=float(os.getenv("STOP_LOSS_PCT", "0.3")),
+        ALVO_PCT=float(os.getenv("ALVO_PCT", "0.5")),
+    )
 
-# Filtros de IV Rank e IV Percentile
-IV_RANK_MAX_BUY = 40
-IV_PERCENTILE_MAX_BUY = 40
 
-# Gatilhos no ativo
-LOOKBACK_ROMPIMENTO = 20
-VOLUME_MULT = 1.5
-
-# EMA para tendência
-EMA_SHORT = 20
-EMA_LONG = 50
-
-# Seleção de opção
-OPCAO_DELTA_MIN = 0.35
-OPCAO_DELTA_MAX = 0.55
-OPCAO_EXPIRY_MIN_DIAS = 14
-OPCAO_EXPIRY_MAX_DIAS = 42
-OPCAO_VOLUME_MIN_DIA = 10000
-OPCAO_OPEN_INTEREST_MIN = 50000
-
-# Controle de ruído
-MINUTOS_ENTRE_ALERTAS_SAME_TICKER = 60
-MINIMA_VARIACAO_PERCENTUAL_PARA_NOVO_ALERTA = 3.0
-
-# Horário de execução (B3)
-MARKET_START = time(9, 0)
-MARKET_END = time(17, 30)
-
-# VERSÃO DO ROBÔ
-ROBO_VERSION = "2.0-opcoes"
+# Compatibilidade: exporta o que o screener importa
+_cfg = load_config()
+BRAPI_TOKEN = _cfg.BRAPI_TOKEN
+ATIVOS = _cfg.ATIVOS
+DELTA_ALVO = _cfg.DELTA_ALVO
+EXPIRACAO_DIAS = _cfg.EXPIRACAO_DIAS
+LOTE = _cfg.LOTE
+LOTE_OPCOES = _cfg.LOTE_OPCOES
+STOP_LOSS_PCT = _cfg.STOP_LOSS_PCT
+ALVO_PCT = _cfg.ALVO_PCT
