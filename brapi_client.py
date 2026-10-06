@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,7 @@ def get_quote(symbol: str) -> QuoteResult | None:
         resp = requests.get(url, headers=_headers(), timeout=10)
         resp.raise_for_status()
         data = resp.json()
+        logger.debug("Brapi quote raw (%s): %s", symbol, json.dumps(data, ensure_ascii=False)[:500])
         results = data.get("results", [])
         if not results:
             logger.warning("Brapi: sem resultados para %s", symbol)
@@ -59,41 +61,41 @@ def get_option_chain(underlying: str) -> OptionChain | None:
 
     Tenta:
       1) /market/option/{ticker}
-      2) /quote/{ticker}?options=true
+      2) /market/option/{ticker}.SA
+      3) /quote/{ticker}?options=true
+      4) /quote/{ticker}.SA?options=true
     """
-    # 1) Endpoint específico de opções
-    try:
-        url = f"{BASE_URL}/market/option/{underlying}"
-        resp = requests.get(url, headers=_headers(), timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        # Brapi costuma retornar: {"results": [{"calls":[...], "puts":[...], ...}]}
-        results = data.get("results", [])
-        if results:
-            r = results[0]
-            calls = r.get("calls", []) or []
-            puts = r.get("puts", []) or []
-            logger.debug("Brapi: %d calls e %d puts para %s", len(calls), len(puts), underlying)
-            return OptionChain(underlying=underlying, calls=calls, puts=puts)
-    except Exception as e:
-        logger.debug("Brapi: falha em /market/option/%s: %s", underlying, e)
+    candidates = [
+        f"{BASE_URL}/market/option/{underlying}",
+        f"{BASE_URL}/market/option/{underlying}.SA",
+        f"{BASE_URL}/quote/{underlying}?options=true",
+        f"{BASE_URL}/quote/{underlying}.SA?options=true",
+    ]
 
-    # 2) Fallback: ?options=true no quote
-    try:
-        url = f"{BASE_URL}/quote/{underlying}?options=true"
-        resp = requests.get(url, headers=_headers(), timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            logger.warning("Brapi: sem resultados para cadeia de %s", underlying)
-            return None
-        r = results[0]
-        options = r.get("options", {})
-        calls = options.get("calls", []) if isinstance(options, dict) else []
-        puts = options.get("puts", []) if isinstance(options, dict) else []
-        logger.debug("Brapi (fallback): %d calls e %d puts para %s", len(calls), len(puts), underlying)
-        return OptionChain(underlying=underlying, calls=calls, puts=puts)
-    except Exception as e:
-        logger.warning("Brapi: erro ao buscar cadeia de opções de %s: %s", underlying, e)
-        return None
+    for url in candidates:
+        try:
+            resp = requests.get(url, headers=_headers(), timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            logger.debug("Brapi option raw (%s): %s", url, json.dumps(data, ensure_ascii=False)[:800])
+
+            results = data.get("results", [])
+            if not results:
+                logger.debug("Brapi: sem results em %s", url)
+                continue
+
+            r = results[0]
+            # Pode vir direto calls/puts ou dentro de options
+            calls = r.get("calls") or r.get("options", {}).get("calls") or []
+            puts = r.get("puts") or r.get("options", {}).get("puts") or []
+
+            if calls or puts:
+                logger.info("Brapi: %d calls e %d puts para %s (via %s)", len(calls), len(puts), underlying, url)
+                return OptionChain(underlying=underlying, calls=calls, puts=puts)
+
+            logger.debug("Brapi: calls/puts vazios em %s", url)
+        except Exception as e:
+            logger.debug("Brapi: falha em %s: %s", url, e)
+
+    logger.warning("Brapi: não conseguiu cadeia de opções para %s em nenhum endpoint", underlying)
+    return None
