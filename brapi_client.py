@@ -1,11 +1,7 @@
 import requests
 import os
-import re
-import logging
 from typing import Optional, Dict, Any, List
-from bs4 import BeautifulSoup
-
-logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta
 
 class Quote:
     def __init__(self, data: Dict[str, Any]):
@@ -48,52 +44,48 @@ class BrapiClient:
             session.close()
     
     def get_option_chain(self, symbol: str) -> OptionChainResult:
+        session = self._get_session()
         try:
             ticker = symbol.upper().replace('3', '').replace('4', '')
-            url = f"https://statusinvest.com.br/acoes/{ticker}/opcoes"
-            logger.info(f"Scraping URL: {url}")
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-            resp.raise_for_status()
-            logger.info(f"Status: {resp.status_code}, Tamanho: {len(resp.text)} bytes")
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            tables = soup.find_all('table')
-            logger.info(f"Tables encontradas: {len(tables)}")
+            target_date = datetime.now() + timedelta(days=30)
+            exp_url = f"{self.base_url}/v2/options/expirations?underlying={ticker}"
+            exp_resp = session.get(exp_url, timeout=10)
+            exp_resp.raise_for_status()
+            exp_data = exp_resp.json()
+            expirations = exp_data.get("expirations", [])
+            if not expirations:
+                return OptionChainResult({'calls': [], 'puts': []})
+            expiration_date = None
+            for exp in sorted(expirations):
+                if exp >= target_date.strftime("%Y-%m-%d"):
+                    expiration_date = exp
+                    break
+            if not expiration_date:
+                expiration_date = expirations[-1]
+            chain_url = f"{self.base_url}/v2/options/chain?underlying={ticker}&expirationDate={expiration_date}"
+            chain_resp = session.get(chain_url, timeout=10)
+            chain_resp.raise_for_status()
+            chain_data = chain_resp.json()
+            series = chain_data.get("series", [])
             calls = []
             puts = []
-            for t_idx, table in enumerate(tables):
-                rows = table.find_all('tr')
-                logger.info(f"Tabela {t_idx}: {len(rows)} rows")
-                for r_idx, row in enumerate(rows):
-                    cols = row.find_all('td')
-                    if len(cols) >= 8:
-                        try:
-                            symbol_text = cols[0].text.strip()
-                            if not symbol_text:
-                                continue
-                            strike_text = cols[1].text.strip().replace(',', '.')
-                            price_text = cols[2].text.strip().replace(',', '.') if cols[2].text.strip() else '0'
-                            strike = float(strike_text)
-                            price = float(price_text) if price_text else 0.0
-                            side = 'call' if 'C' in symbol_text.upper() or 'CALL' in symbol_text.upper() else 'put'
-                            option = {
-                                'symbol': symbol_text,
-                                'strike': strike,
-                                'price': price,
-                                'delta': 0.5,
-                                'side': side
-                            }
-                            if side == 'call':
-                                calls.append(option)
-                            else:
-                                puts.append(option)
-                        except Exception as e:
-                            logger.warning(f"Erro ao parsear row {r_idx}: {e}")
-                            continue
-            logger.info(f"Total: {len(calls)} calls, {len(puts)} puts")
+            for opt in series:
+                option = {
+                    'symbol': opt.get('symbol', ''),
+                    'strike': opt.get('strike', 0),
+                    'price': opt.get('close', 0) or opt.get('bid', 0) or opt.get('ask', 0),
+                    'delta': 0.5,
+                    'side': opt.get('side', 'call')
+                }
+                if option['side'] == 'call':
+                    calls.append(option)
+                else:
+                    puts.append(option)
             return OptionChainResult({'calls': calls, 'puts': puts})
         except Exception as e:
-            logger.error(f"Erro no scraping: {e}")
             return OptionChainResult({'calls': [], 'puts': []})
+        finally:
+            session.close()
 
 OptionChain = BrapiClient
 
