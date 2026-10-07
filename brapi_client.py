@@ -46,7 +46,8 @@ class BrapiClient:
 
     def get_option_chain(self, symbol: str) -> OptionChainResult:
         """Retorna a cadeia de opções para o símbolo."""
-        url = f"{self.base_url}/quote/{symbol}/options"
+        # Brapi usa /options/{SYMBOL} para cadeia de opções
+        url = f"{self.base_url}/options/{symbol}"
         resp = self._session.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
