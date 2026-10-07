@@ -1,6 +1,16 @@
-import httpx
+import requests
 import os
 from typing import Optional, Dict, Any, List
+
+class OptionChainResult:
+    """Classe para representar o resultado de uma cadeia de opções."""
+    def __init__(self, data: Dict[str, Any]):
+        self._data = data
+        self.calls = data.get("calls", [])
+        self.puts = data.get("puts", [])
+    
+    def __bool__(self):
+        return bool(self._data)
 
 class BrapiClient:
     def __init__(self, token: Optional[str] = None):
@@ -8,51 +18,39 @@ class BrapiClient:
         if not self.token:
             raise ValueError("BRAPI_TOKEN não configurado. Defina a variável de ambiente BRAPI_TOKEN.")
         self.base_url = "https://brapi.dev/api"
-        self._client: Optional[httpx.AsyncClient] = None
+        self._session = requests.Session()
+        self._session.headers.update({"Authorization": f"token {self.token}"})
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers={"Authorization": f"token {self.token}"},
-                timeout=10.0
-            )
-        return self._client
+    def close(self):
+        self._session.close()
 
-    async def close(self):
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
-
-    async def get_quote(self, symbol: str) -> Dict[str, Any]:
-        client = await self._get_client()
+    def get_quote(self, symbol: str) -> Dict[str, Any]:
         url = f"{self.base_url}/quote/{symbol}"
-        resp = await client.get(url)
+        resp = self._session.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         return data.get("results", [{}])[0] if isinstance(data.get("results"), list) and len(data["results"]) > 0 else data
 
-    async def get_company_info(self, symbol: str) -> Dict[str, Any]:
-        client = await self._get_client()
+    def get_company_info(self, symbol: str) -> Dict[str, Any]:
         url = f"{self.base_url}/company/{symbol}"
-        resp = await client.get(url)
+        resp = self._session.get(url, timeout=10)
         resp.raise_for_status()
         return resp.json()
 
-    async def search_symbols(self, query: str) -> list:
-        client = await self._get_client()
+    def search_symbols(self, query: str) -> list:
         url = f"{self.base_url}/search/{query}"
-        resp = await client.get(url)
+        resp = self._session.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         return data.get("results", []) if isinstance(data.get("results"), list) else []
 
-    async def get_option_chain(self, symbol: str) -> Dict[str, Any]:
+    def get_option_chain(self, symbol: str) -> OptionChainResult:
         """Retorna a cadeia de opções para o símbolo."""
-        client = await self._get_client()
         url = f"{self.base_url}/quote/{symbol}/options"
-        resp = await client.get(url)
+        resp = self._session.get(url, timeout=10)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return OptionChainResult(data)
 
 # Aliases para compatibilidade com screener.py
 OptionChain = BrapiClient
@@ -60,9 +58,13 @@ OptionChain = BrapiClient
 def get_quote(symbol: str) -> Dict[str, Any]:
     """Função standalone para get_quote."""
     client = BrapiClient()
-    return client.get_quote(symbol)
+    result = client.get_quote(symbol)
+    client.close()
+    return result
 
-def get_option_chain(symbol: str) -> Dict[str, Any]:
+def get_option_chain(symbol: str) -> OptionChainResult:
     """Função standalone para get_option_chain."""
     client = BrapiClient()
-    return client.get_option_chain(symbol)
+    result = client.get_option_chain(symbol)
+    client.close()
+    return result
