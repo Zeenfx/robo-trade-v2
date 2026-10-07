@@ -49,26 +49,27 @@ class BrapiClient:
     def get_option_chain(self, symbol: str) -> OptionChainResult:
         # Dados mock para desenvolvimento
         underlying_price = self.get_quote(symbol).price or 55.0
-        # Strikes variando de ITM a OTM
-        strikes = [45, 48, 50, 52, 54, 55, 56, 58, 60, 62, 65]
+        # Strikes de -20% a +20% do preço atual
+        step = underlying_price * 0.05
+        strikes = [round(underlying_price * 0.8 + i * step, 2) for i in range(9)]
         calls = []
         puts = []
         for i, strike in enumerate(strikes):
             moneyness = (underlying_price - strike) / underlying_price
-            # Delta varia de ~0.8 (ITM) a ~0.2 (OTM)
-            call_delta = round(0.8 - i * 0.06, 2)
-            put_delta = round(0.2 + i * 0.06, 2)
-            call_price = max(0.01, underlying_price - strike + 3 - i * 0.2)
-            put_price = max(0.01, strike - underlying_price + 3 - (len(strikes) - i) * 0.2)
+            # Delta varia de ~0.75 (ITM) a ~0.25 (OTM)
+            call_delta = round(0.75 - i * 0.07, 2)
+            put_delta = round(0.25 + i * 0.07, 2)
+            call_price = max(0.5, underlying_price - strike + 2.5)
+            put_price = max(0.5, strike - underlying_price + 2.5)
             calls.append({
-                'symbol': f"{symbol[:4]}C{int(strike*1000)}",
+                'symbol': f"{symbol[:4]}C{int(strike*100)}",
                 'strike': strike,
                 'price': round(call_price, 2),
                 'delta': call_delta,
                 'side': 'call'
             })
             puts.append({
-                'symbol': f"{symbol[:4]}P{int(strike*1000)}",
+                'symbol': f"{symbol[:4]}P{int(strike*100)}",
                 'strike': strike,
                 'price': round(put_price, 2),
                 'delta': put_delta,
