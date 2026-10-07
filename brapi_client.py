@@ -1,7 +1,10 @@
 import requests
 import os
+import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 class Quote:
     def __init__(self, data: Dict[str, Any]):
@@ -49,11 +52,14 @@ class BrapiClient:
             ticker = symbol.upper().replace('3', '').replace('4', '')
             target_date = datetime.now() + timedelta(days=30)
             exp_url = f"{self.base_url}/v2/options/expirations?underlying={ticker}"
+            logger.info(f"Exp URL: {exp_url}")
             exp_resp = session.get(exp_url, timeout=10)
             exp_resp.raise_for_status()
             exp_data = exp_resp.json()
+            logger.info(f"Exp response: {exp_data}")
             expirations = exp_data.get("expirations", [])
             if not expirations:
+                logger.warning(f"Sem vencimentos para {ticker}")
                 return OptionChainResult({'calls': [], 'puts': []})
             expiration_date = None
             for exp in sorted(expirations):
@@ -62,11 +68,17 @@ class BrapiClient:
                     break
             if not expiration_date:
                 expiration_date = expirations[-1]
+            logger.info(f"Vencimento selecionado: {expiration_date}")
             chain_url = f"{self.base_url}/v2/options/chain?underlying={ticker}&expirationDate={expiration_date}"
+            logger.info(f"Chain URL: {chain_url}")
             chain_resp = session.get(chain_url, timeout=10)
             chain_resp.raise_for_status()
             chain_data = chain_resp.json()
+            logger.info(f"Chain response keys: {chain_data.keys()}")
             series = chain_data.get("series", [])
+            logger.info(f"Series count: {len(series)}")
+            if series:
+                logger.info(f"Primeira serie: {series[0]}")
             calls = []
             puts = []
             for opt in series:
@@ -81,8 +93,10 @@ class BrapiClient:
                     calls.append(option)
                 else:
                     puts.append(option)
+            logger.info(f"Total: {len(calls)} calls, {len(puts)} puts")
             return OptionChainResult({'calls': calls, 'puts': puts})
         except Exception as e:
+            logger.error(f"Erro no scraping: {e}")
             return OptionChainResult({'calls': [], 'puts': []})
         finally:
             session.close()
