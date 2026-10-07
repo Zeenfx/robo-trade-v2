@@ -50,10 +50,15 @@ class BrapiClient:
         session = self._get_session()
         try:
             ticker = symbol.upper().replace('3', '').replace('4', '')
+            # PETR4 é free no sandbox
+            if ticker != 'PETR':
+                logger.warning(f"Opcoes so free para PETR no sandbox. Usando PETR.")
+                ticker = 'PETR'
             target_date = datetime.now() + timedelta(days=30)
             exp_url = f"{self.base_url}/v2/options/expirations?underlying={ticker}"
             logger.info(f"Exp URL: {exp_url}")
             exp_resp = session.get(exp_url, timeout=10)
+            logger.info(f"Exp status: {exp_resp.status_code}")
             exp_resp.raise_for_status()
             exp_data = exp_resp.json()
             logger.info(f"Exp response: {exp_data}")
@@ -72,6 +77,7 @@ class BrapiClient:
             chain_url = f"{self.base_url}/v2/options/chain?underlying={ticker}&expirationDate={expiration_date}"
             logger.info(f"Chain URL: {chain_url}")
             chain_resp = session.get(chain_url, timeout=10)
+            logger.info(f"Chain status: {chain_resp.status_code}")
             chain_resp.raise_for_status()
             chain_data = chain_resp.json()
             logger.info(f"Chain response keys: {chain_data.keys()}")
@@ -96,7 +102,7 @@ class BrapiClient:
             logger.info(f"Total: {len(calls)} calls, {len(puts)} puts")
             return OptionChainResult({'calls': calls, 'puts': puts})
         except Exception as e:
-            logger.error(f"Erro no scraping: {e}")
+            logger.error(f"Erro: {e}")
             return OptionChainResult({'calls': [], 'puts': []})
         finally:
             session.close()
