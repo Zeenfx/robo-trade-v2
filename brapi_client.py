@@ -49,28 +49,32 @@ class BrapiClient:
     def get_option_chain(self, symbol: str) -> OptionChainResult:
         # Dados mock para desenvolvimento
         underlying_price = self.get_quote(symbol).price or 55.0
-        strikes = [50, 52, 54, 55, 56, 58, 60]
+        # Strikes variando de ITM a OTM
+        strikes = [45, 48, 50, 52, 54, 55, 56, 58, 60, 62, 65]
         calls = []
         puts = []
         for i, strike in enumerate(strikes):
             moneyness = (underlying_price - strike) / underlying_price
-            call_price = max(0.01, underlying_price - strike + 2 - i * 0.3)
-            put_price = max(0.01, strike - underlying_price + 2 - (len(strikes) - i) * 0.3)
+            # Delta varia de ~0.8 (ITM) a ~0.2 (OTM)
+            call_delta = round(0.8 - i * 0.06, 2)
+            put_delta = round(0.2 + i * 0.06, 2)
+            call_price = max(0.01, underlying_price - strike + 3 - i * 0.2)
+            put_price = max(0.01, strike - underlying_price + 3 - (len(strikes) - i) * 0.2)
             calls.append({
                 'symbol': f"{symbol[:4]}C{int(strike*1000)}",
                 'strike': strike,
                 'price': round(call_price, 2),
-                'delta': round(0.5 + moneyness * 0.3, 2),
+                'delta': call_delta,
                 'side': 'call'
             })
             puts.append({
                 'symbol': f"{symbol[:4]}P{int(strike*1000)}",
                 'strike': strike,
                 'price': round(put_price, 2),
-                'delta': round(0.5 - moneyness * 0.3, 2),
+                'delta': put_delta,
                 'side': 'put'
             })
-        logger.info(f"Mock options: {len(calls)} calls, {len(puts)} puts para {symbol}")
+        logger.info(f"Mock options: {len(calls)} calls, {len(puts)} puts para {symbol} @ {underlying_price}")
         return OptionChainResult({'calls': calls, 'puts': puts})
 
 OptionChain = BrapiClient
