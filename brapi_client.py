@@ -1,6 +1,6 @@
 import httpx
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 class BrapiClient:
     def __init__(self, token: Optional[str] = None):
@@ -45,3 +45,16 @@ class BrapiClient:
         resp.raise_for_status()
         data = resp.json()
         return data.get("results", []) if isinstance(data.get("results"), list) else []
+
+    async def get_option_chain(self, symbol: str) -> Dict[str, Any]:
+        """Retorna a cadeia de opções para o símbolo."""
+        client = await self._get_client()
+        url = f"{self.base_url}/quote/{symbol}/options"
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+# Aliases para compatibilidade com screener.py
+OptionChain = BrapiClient
+get_option_chain = BrapiClient.get_option_chain
+get_quote = BrapiClient.get_quote
