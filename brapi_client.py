@@ -56,5 +56,13 @@ class BrapiClient:
 
 # Aliases para compatibilidade com screener.py
 OptionChain = BrapiClient
-get_option_chain = BrapiClient.get_option_chain
-get_quote = BrapiClient.get_quote
+
+def get_quote(symbol: str) -> Dict[str, Any]:
+    """Função standalone para get_quote."""
+    client = BrapiClient()
+    return client.get_quote(symbol)
+
+def get_option_chain(symbol: str) -> Dict[str, Any]:
+    """Função standalone para get_option_chain."""
+    client = BrapiClient()
+    return client.get_option_chain(symbol)
