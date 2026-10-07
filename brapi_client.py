@@ -28,7 +28,7 @@ class BrapiClient:
     
     def _get_session(self) -> requests.Session:
         session = requests.Session()
-        session.headers.update({"Authorization": f"token {self.token}"})
+        session.headers.update({"Authorization": f"Bearer {self.token}"})
         return session
     
     def get_quote(self, symbol: str) -> Quote:
