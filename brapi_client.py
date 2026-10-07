@@ -13,9 +13,13 @@ class Quote:
 class OptionChainResult:
     def __init__(self, data: Dict[str, Any]):
         self._data = data
-        series = data.get("series", [])
-        self.calls = [s for s in series if s.get("side") == "call"]
-        self.puts = [s for s in series if s.get("side") == "put"]
+        series = data.get("series", data.get("options", data.get("results", [])))
+        if isinstance(series, list):
+            self.calls = [s for s in series if s.get("side") == "call" or s.get("optionType") == "call"]
+            self.puts = [s for s in series if s.get("side") == "put" or s.get("optionType") == "put"]
+        else:
+            self.calls = []
+            self.puts = []
     def __bool__(self):
         return bool(self._data)
 
@@ -43,43 +47,14 @@ class BrapiClient:
         finally:
             session.close()
     
-    def get_company_info(self, symbol: str) -> Dict[str, Any]:
-        session = self._get_session()
-        try:
-            url = f"{self.base_url}/company/{symbol}"
-            resp = session.get(url, timeout=10)
-            resp.raise_for_status()
-            return resp.json()
-        finally:
-            session.close()
-    
-    def search_symbols(self, query: str) -> list:
-        session = self._get_session()
-        try:
-            url = f"{self.base_url}/search/{query}"
-            resp = session.get(url, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("results", []) if isinstance(data.get("results"), list) else []
-        finally:
-            session.close()
-    
     def get_option_chain(self, symbol: str) -> OptionChainResult:
         session = self._get_session()
         try:
-            exp_url = f"{self.base_url}/v2/options/expirations"
-            exp_resp = session.get(exp_url, params={"underlying": symbol}, timeout=10)
-            exp_resp.raise_for_status()
-            exp_data = exp_resp.json()
-            expirations = exp_data.get("expirations", [])
-            if not expirations:
-                return OptionChainResult({})
-            expiration_date = expirations[0]
-            chain_url = f"{self.base_url}/v2/options/chain"
-            chain_resp = session.get(chain_url, params={"underlying": symbol, "expirationDate": expiration_date}, timeout=10)
-            chain_resp.raise_for_status()
-            chain_data = chain_resp.json()
-            return OptionChainResult(chain_data)
+            url = f"{self.base_url}/quote/{symbol}"
+            resp = session.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            return OptionChainResult(data)
         finally:
             session.close()
 
