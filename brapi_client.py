@@ -25,53 +25,72 @@ class BrapiClient:
         if not self.token:
             raise ValueError("BRAPI_TOKEN nao configurado")
         self.base_url = "https://brapi.dev/api"
-        self._session = requests.Session()
-        self._session.headers.update({"Authorization": f"token {self.token}"})
-    def close(self):
-        self._session.close()
+    
+    def _get_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update({"Authorization": f"token {self.token}"})
+        return session
+    
     def get_quote(self, symbol: str) -> Quote:
-        url = f"{self.base_url}/quote/{symbol}"
-        resp = self._session.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        result = data.get("results", [{}])[0] if isinstance(data.get("results"), list) and len(data["results"]) > 0 else data
-        return Quote(result)
+        session = self._get_session()
+        try:
+            url = f"{self.base_url}/quote/{symbol}"
+            resp = session.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            result = data.get("results", [{}])[0] if isinstance(data.get("results"), list) and len(data["results"]) > 0 else data
+            return Quote(result)
+        finally:
+            session.close()
+    
     def get_company_info(self, symbol: str) -> Dict[str, Any]:
-        url = f"{self.base_url}/company/{symbol}"
-        resp = self._session.get(url, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
+        session = self._get_session()
+        try:
+            url = f"{self.base_url}/company/{symbol}"
+            resp = session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            session.close()
+    
     def search_symbols(self, query: str) -> list:
-        url = f"{self.base_url}/search/{query}"
-        resp = self._session.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("results", []) if isinstance(data.get("results"), list) else []
+        session = self._get_session()
+        try:
+            url = f"{self.base_url}/search/{query}"
+            resp = session.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("results", []) if isinstance(data.get("results"), list) else []
+        finally:
+            session.close()
+    
     def get_option_chain(self, symbol: str) -> OptionChainResult:
-        exp_url = f"{self.base_url}/v2/options/expirations"
-        exp_resp = self._session.get(exp_url, params={"underlying": symbol}, timeout=10)
-        exp_resp.raise_for_status()
-        exp_data = exp_resp.json()
-        expirations = exp_data.get("expirations", [])
-        if not expirations:
-            return OptionChainResult({})
-        expiration_date = expirations[0]
-        chain_url = f"{self.base_url}/v2/options/chain"
-        chain_resp = self._session.get(chain_url, params={"underlying": symbol, "expirationDate": expiration_date}, timeout=10)
-        chain_resp.raise_for_status()
-        chain_data = chain_resp.json()
-        return OptionChainResult(chain_data)
+        session = self._get_session()
+        try:
+            exp_url = f"{self.base_url}/v2/options/expirations"
+            exp_resp = session.get(exp_url, params={"underlying": symbol}, timeout=10)
+            exp_resp.raise_for_status()
+            exp_data = exp_resp.json()
+            expirations = exp_data.get("expirations", [])
+            if not expirations:
+                return OptionChainResult({})
+            expiration_date = expirations[0]
+            chain_url = f"{self.base_url}/v2/options/chain"
+            chain_resp = session.get(chain_url, params={"underlying": symbol, "expirationDate": expiration_date}, timeout=10)
+            chain_resp.raise_for_status()
+            chain_data = chain_resp.json()
+            return OptionChainResult(chain_data)
+        finally:
+            session.close()
 
 OptionChain = BrapiClient
 
 def get_quote(symbol: str) -> Quote:
     client = BrapiClient()
     result = client.get_quote(symbol)
-    client.close()
     return result
 
 def get_option_chain(symbol: str) -> OptionChainResult:
     client = BrapiClient()
     result = client.get_option_chain(symbol)
-    client.close()
     return result
