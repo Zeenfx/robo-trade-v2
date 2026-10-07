@@ -1,2 +1,2 @@
-requests
-pandas
+httpx
+python-telegram-bot
