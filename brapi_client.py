@@ -47,65 +47,31 @@ class BrapiClient:
             session.close()
     
     def get_option_chain(self, symbol: str) -> OptionChainResult:
-        session = self._get_session()
-        try:
-            ticker = symbol.upper().replace('3', '').replace('4', '')
-            # PETR4 é free no sandbox
-            if ticker != 'PETR':
-                logger.warning(f"Opcoes so free para PETR no sandbox. Usando PETR.")
-                ticker = 'PETR'
-            target_date = datetime.now() + timedelta(days=30)
-            exp_url = f"{self.base_url}/v2/options/expirations?underlying={ticker}"
-            logger.info(f"Exp URL: {exp_url}")
-            exp_resp = session.get(exp_url, timeout=10)
-            logger.info(f"Exp status: {exp_resp.status_code}")
-            exp_resp.raise_for_status()
-            exp_data = exp_resp.json()
-            logger.info(f"Exp response: {exp_data}")
-            expirations = exp_data.get("expirations", [])
-            if not expirations:
-                logger.warning(f"Sem vencimentos para {ticker}")
-                return OptionChainResult({'calls': [], 'puts': []})
-            expiration_date = None
-            for exp in sorted(expirations):
-                if exp >= target_date.strftime("%Y-%m-%d"):
-                    expiration_date = exp
-                    break
-            if not expiration_date:
-                expiration_date = expirations[-1]
-            logger.info(f"Vencimento selecionado: {expiration_date}")
-            chain_url = f"{self.base_url}/v2/options/chain?underlying={ticker}&expirationDate={expiration_date}"
-            logger.info(f"Chain URL: {chain_url}")
-            chain_resp = session.get(chain_url, timeout=10)
-            logger.info(f"Chain status: {chain_resp.status_code}")
-            chain_resp.raise_for_status()
-            chain_data = chain_resp.json()
-            logger.info(f"Chain response keys: {chain_data.keys()}")
-            series = chain_data.get("series", [])
-            logger.info(f"Series count: {len(series)}")
-            if series:
-                logger.info(f"Primeira serie: {series[0]}")
-            calls = []
-            puts = []
-            for opt in series:
-                option = {
-                    'symbol': opt.get('symbol', ''),
-                    'strike': opt.get('strike', 0),
-                    'price': opt.get('close', 0) or opt.get('bid', 0) or opt.get('ask', 0),
-                    'delta': 0.5,
-                    'side': opt.get('side', 'call')
-                }
-                if option['side'] == 'call':
-                    calls.append(option)
-                else:
-                    puts.append(option)
-            logger.info(f"Total: {len(calls)} calls, {len(puts)} puts")
-            return OptionChainResult({'calls': calls, 'puts': puts})
-        except Exception as e:
-            logger.error(f"Erro: {e}")
-            return OptionChainResult({'calls': [], 'puts': []})
-        finally:
-            session.close()
+        # Dados mock para desenvolvimento
+        underlying_price = self.get_quote(symbol).price or 55.0
+        strikes = [50, 52, 54, 55, 56, 58, 60]
+        calls = []
+        puts = []
+        for i, strike in enumerate(strikes):
+            moneyness = (underlying_price - strike) / underlying_price
+            call_price = max(0.01, underlying_price - strike + 2 - i * 0.3)
+            put_price = max(0.01, strike - underlying_price + 2 - (len(strikes) - i) * 0.3)
+            calls.append({
+                'symbol': f"{symbol[:4]}C{int(strike*1000)}",
+                'strike': strike,
+                'price': round(call_price, 2),
+                'delta': round(0.5 + moneyness * 0.3, 2),
+                'side': 'call'
+            })
+            puts.append({
+                'symbol': f"{symbol[:4]}P{int(strike*1000)}",
+                'strike': strike,
+                'price': round(put_price, 2),
+                'delta': round(0.5 - moneyness * 0.3, 2),
+                'side': 'put'
+            })
+        logger.info(f"Mock options: {len(calls)} calls, {len(puts)} puts para {symbol}")
+        return OptionChainResult({'calls': calls, 'puts': puts})
 
 OptionChain = BrapiClient
 
