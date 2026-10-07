@@ -46,25 +46,41 @@ class BrapiClient:
     
     def get_option_chain(self, symbol: str) -> OptionChainResult:
         try:
-            url = f"https://statusinvest.com.br/acoes/{symbol.lower().replace('3', '').replace('4', '')}/opcoes"
+            ticker = symbol.upper().replace('3', '').replace('4', '')
+            url = f"https://statusinvest.com.br/acoes/{ticker}/opcoes"
             resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, 'html.parser')
             calls = []
             puts = []
-            table = soup.find('table')
-            if table:
-                rows = table.find_all('tr')[1:]
+            # Buscar todas as tabelas
+            tables = soup.find_all('table')
+            for table in tables:
+                rows = table.find_all('tr')
                 for row in rows:
                     cols = row.find_all('td')
                     if len(cols) >= 8:
                         try:
-                            option = {'symbol': cols[0].text.strip(), 'strike': float(cols[1].text.strip().replace(',', '.')), 'price': float(cols[2].text.strip().replace(',', '.') or 0), 'delta': 0.5, 'side': 'call' if 'C' in cols[0].text.upper() else 'put'}
-                            if option['side'] == 'call':
+                            symbol_text = cols[0].text.strip()
+                            if not symbol_text:
+                                continue
+                            strike_text = cols[1].text.strip().replace(',', '.')
+                            price_text = cols[2].text.strip().replace(',', '.') if cols[2].text.strip() else '0'
+                            strike = float(strike_text)
+                            price = float(price_text) if price_text else 0.0
+                            side = 'call' if 'C' in symbol_text.upper() or 'CALL' in symbol_text.upper() else 'put'
+                            option = {
+                                'symbol': symbol_text,
+                                'strike': strike,
+                                'price': price,
+                                'delta': 0.5,
+                                'side': side
+                            }
+                            if side == 'call':
                                 calls.append(option)
                             else:
                                 puts.append(option)
-                        except:
+                        except Exception as e:
                             continue
             return OptionChainResult({'calls': calls, 'puts': puts})
         except Exception as e:
