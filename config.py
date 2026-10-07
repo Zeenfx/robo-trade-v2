@@ -1,4 +1,11 @@
+import os
+
 # Configurações do robô de opções
+
+# Tokens e credenciais
+BRAPI_TOKEN = os.getenv('BRAPI_TOKEN', '')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 # Universo de ativos
 ATIVOS = ['PETR4', 'VALE3', 'BOVA11', 'ITUB4', 'BBDC4', 'BBAS3', 'B3SA3', 'WEGE3', 'MGLU3', 'LREN3', 'ITSA4', 'CIEL3', 'EMBR3', 'HAPV3', 'RADL3', 'TAEE11', 'CPFE3', 'EQTL3', 'SBSP3', 'VIVT3', 'GOAU4', 'USIM5']
