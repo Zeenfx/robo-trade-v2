@@ -28,6 +28,7 @@ class BrapiClient:
         if not self.token:
             raise ValueError("BRAPI_TOKEN nao configurado")
         self.base_url = "https://brapi.dev/api"
+        self._session = self._get_session()
     
     def _get_session(self) -> requests.Session:
         session = requests.Session()
@@ -35,57 +36,105 @@ class BrapiClient:
         return session
     
     def get_quote(self, symbol: str) -> Quote:
-        session = self._get_session()
         try:
             url = f"{self.base_url}/quote/{symbol}"
-            resp = session.get(url, timeout=10)
+            resp = self._session.get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             result = data.get("results", [{}])[0] if isinstance(data.get("results"), list) and len(data["results"]) > 0 else data
             return Quote(result)
-        finally:
-            session.close()
+        except Exception as e:
+            logger.error(f"Erro get_quote {symbol}: {e}")
+            return Quote({})
     
-    def get_option_chain(self, symbol: str) -> OptionChainResult:
-        # Dados mock para desenvolvimento
-        underlying_price = self.get_quote(symbol).price or 55.0
-        # Strikes de -20% a +20% do preço atual
-        step = underlying_price * 0.05
-        strikes = [round(underlying_price * 0.8 + i * step, 2) for i in range(9)]
-        calls = []
-        puts = []
-        for i, strike in enumerate(strikes):
-            moneyness = (underlying_price - strike) / underlying_price
-            # Delta varia de ~0.75 (ITM) a ~0.25 (OTM)
-            call_delta = round(0.75 - i * 0.07, 2)
-            put_delta = round(0.25 + i * 0.07, 2)
-            call_price = max(0.5, underlying_price - strike + 2.5)
-            put_price = max(0.5, strike - underlying_price + 2.5)
-            calls.append({
-                'symbol': f"{symbol[:4]}C{int(strike*100)}",
-                'strike': strike,
-                'price': round(call_price, 2),
-                'delta': call_delta,
-                'side': 'call'
-            })
-            puts.append({
-                'symbol': f"{symbol[:4]}P{int(strike*100)}",
-                'strike': strike,
-                'price': round(put_price, 2),
-                'delta': put_delta,
-                'side': 'put'
-            })
-        logger.info(f"Mock options: {len(calls)} calls, {len(puts)} puts para {symbol} @ {underlying_price}")
-        return OptionChainResult({'calls': calls, 'puts': puts})
+    def get_option_chain(self, symbol: str, target_dte: int = 30) -> OptionChainResult:
+        """
+        Busca cadeia de opções real da Brapi API (requer plano Pro).
+        
+        Args:
+            symbol: Símbolo do ativo (ex: PETR4, VALE3)
+            target_dte: Dias até o vencimento alvo (default: 30)
+        
+        Returns:
+            OptionChainResult com listas de calls e puts
+        """
+        try:
+            ticker = symbol.upper().replace('3', '').replace('4', '')
+            
+            # 1. Buscar vencimentos disponíveis
+            exp_url = f"{self.base_url}/v2/options/expirations?underlying={ticker}"
+            logger.info(f"Buscando vencimentos: {exp_url}")
+            exp_resp = self._session.get(exp_url, timeout=10)
+            exp_resp.raise_for_status()
+            exp_data = exp_resp.json()
+            
+            expirations = exp_data.get("expirations", [])
+            if not expirations:
+                logger.warning(f"Sem vencimentos para {ticker}")
+                return OptionChainResult({'calls': [], 'puts': []})
+            
+            # 2. Selecionar vencimento mais próximo do target_dte
+            target_date = datetime.now() + timedelta(days=target_dte)
+            expiration_date = None
+            for exp in sorted(expirations):
+                exp_dt = datetime.strptime(exp, "%Y-%m-%d")
+                if exp_dt >= target_date:
+                    expiration_date = exp
+                    break
+            
+            if not expiration_date:
+                expiration_date = expirations[-1]  # Usa último disponível
+            
+            logger.info(f"Vencimento selecionado: {expiration_date}")
+            
+            # 3. Buscar cadeia de opções
+            chain_url = f"{self.base_url}/v2/options/chain?underlying={ticker}&expirationDate={expiration_date}"
+            logger.info(f"Buscando chain: {chain_url}")
+            chain_resp = self._session.get(chain_url, timeout=10)
+            chain_resp.raise_for_status()
+            chain_data = chain_resp.json()
+            
+            # 4. Parsear séries
+            series = chain_data.get("series", [])
+            logger.info(f"Series encontradas: {len(series)}")
+            
+            calls = []
+            puts = []
+            
+            for opt in series:
+                side = opt.get("side", "").lower()
+                option = {
+                    'symbol': opt.get('symbol', ''),
+                    'strike': opt.get('strike', 0),
+                    'price': opt.get('close', 0) or opt.get('bid', 0) or opt.get('ask', 0) or opt.get('last', 0),
+                    'delta': opt.get('delta', 0.5),
+                    'gamma': opt.get('gamma', 0),
+                    'theta': opt.get('theta', 0),
+                    'vega': opt.get('vega', 0),
+                    'iv': opt.get('iv', 0),
+                    'volume': opt.get('volume', 0),
+                    'open_interest': opt.get('openInterest', 0),
+                    'side': side
+                }
+                
+                if side == 'call':
+                    calls.append(option)
+                elif side == 'put':
+                    puts.append(option)
+            
+            logger.info(f"Total: {len(calls)} calls, {len(puts)} puts para {symbol}")
+            return OptionChainResult({'calls': calls, 'puts': puts})
+            
+        except Exception as e:
+            logger.error(f"Erro get_option_chain {symbol}: {e}")
+            return OptionChainResult({'calls': [], 'puts': []})
 
 OptionChain = BrapiClient
 
 def get_quote(symbol: str) -> Quote:
     client = BrapiClient()
-    result = client.get_quote(symbol)
-    return result
+    return client.get_quote(symbol)
 
-def get_option_chain(symbol: str) -> OptionChainResult:
+def get_option_chain(symbol: str, target_dte: int = 30) -> OptionChainResult:
     client = BrapiClient()
-    result = client.get_option_chain(symbol)
-    return result
+    return client.get_option_chain(symbol, target_dte)
