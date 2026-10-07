@@ -1,8 +1,11 @@
 import requests
 import os
 import re
+import logging
 from typing import Optional, Dict, Any, List
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 class Quote:
     def __init__(self, data: Dict[str, Any]):
@@ -48,16 +51,19 @@ class BrapiClient:
         try:
             ticker = symbol.upper().replace('3', '').replace('4', '')
             url = f"https://statusinvest.com.br/acoes/{ticker}/opcoes"
+            logger.info(f"Scraping URL: {url}")
             resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             resp.raise_for_status()
+            logger.info(f"Status: {resp.status_code}, Tamanho: {len(resp.text)} bytes")
             soup = BeautifulSoup(resp.text, 'html.parser')
+            tables = soup.find_all('table')
+            logger.info(f"Tables encontradas: {len(tables)}")
             calls = []
             puts = []
-            # Buscar todas as tabelas
-            tables = soup.find_all('table')
-            for table in tables:
+            for t_idx, table in enumerate(tables):
                 rows = table.find_all('tr')
-                for row in rows:
+                logger.info(f"Tabela {t_idx}: {len(rows)} rows")
+                for r_idx, row in enumerate(rows):
                     cols = row.find_all('td')
                     if len(cols) >= 8:
                         try:
@@ -81,9 +87,12 @@ class BrapiClient:
                             else:
                                 puts.append(option)
                         except Exception as e:
+                            logger.warning(f"Erro ao parsear row {r_idx}: {e}")
                             continue
+            logger.info(f"Total: {len(calls)} calls, {len(puts)} puts")
             return OptionChainResult({'calls': calls, 'puts': puts})
         except Exception as e:
+            logger.error(f"Erro no scraping: {e}")
             return OptionChainResult({'calls': [], 'puts': []})
 
 OptionChain = BrapiClient
