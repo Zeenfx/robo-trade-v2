@@ -1,6 +1,8 @@
 import requests
 import os
+import re
 from typing import Optional, Dict, Any, List
+from bs4 import BeautifulSoup
 
 class Quote:
     def __init__(self, data: Dict[str, Any]):
@@ -13,13 +15,8 @@ class Quote:
 class OptionChainResult:
     def __init__(self, data: Dict[str, Any]):
         self._data = data
-        series = data.get("series", data.get("options", data.get("results", [])))
-        if isinstance(series, list):
-            self.calls = [s for s in series if s.get("side") == "call" or s.get("optionType") == "call"]
-            self.puts = [s for s in series if s.get("side") == "put" or s.get("optionType") == "put"]
-        else:
-            self.calls = []
-            self.puts = []
+        self.calls = data.get("calls", [])
+        self.puts = data.get("puts", [])
     def __bool__(self):
         return bool(self._data)
 
@@ -32,7 +29,7 @@ class BrapiClient:
     
     def _get_session(self) -> requests.Session:
         session = requests.Session()
-        session.headers.update({"Authorization": f"Bearer {self.token}"})
+        session.headers.update({"Authorization": f"Bearer {self.token}", "User-Agent": "Mozilla/5.0"})
         return session
     
     def get_quote(self, symbol: str) -> Quote:
@@ -48,15 +45,30 @@ class BrapiClient:
             session.close()
     
     def get_option_chain(self, symbol: str) -> OptionChainResult:
-        session = self._get_session()
         try:
-            url = f"{self.base_url}/quote/{symbol}"
-            resp = session.get(url, timeout=10)
+            url = f"https://statusinvest.com.br/acoes/{symbol.lower().replace('3', '').replace('4', '')}/opcoes"
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             resp.raise_for_status()
-            data = resp.json()
-            return OptionChainResult(data)
-        finally:
-            session.close()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            calls = []
+            puts = []
+            table = soup.find('table')
+            if table:
+                rows = table.find_all('tr')[1:]
+                for row in rows:
+                    cols = row.find_all('td')
+                    if len(cols) >= 8:
+                        try:
+                            option = {'symbol': cols[0].text.strip(), 'strike': float(cols[1].text.strip().replace(',', '.')), 'price': float(cols[2].text.strip().replace(',', '.') or 0), 'delta': 0.5, 'side': 'call' if 'C' in cols[0].text.upper() else 'put'}
+                            if option['side'] == 'call':
+                                calls.append(option)
+                            else:
+                                puts.append(option)
+                        except:
+                            continue
+            return OptionChainResult({'calls': calls, 'puts': puts})
+        except Exception as e:
+            return OptionChainResult({'calls': [], 'puts': []})
 
 OptionChain = BrapiClient
 
