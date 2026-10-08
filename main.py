@@ -13,15 +13,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
 
 
-def get_profit_link(symbol: str) -> str:
-    """Deep link para Profit Mobile + fallback web"""
-    # Deep link direto pro app
-    return f"profitmobile://chart/{symbol}"
-
-
-def get_profit_web_link(symbol: str) -> str:
-    """Link web de fallback"""
-    return f"https://profit.net.br/chart/{symbol}"
+def get_profit_links(symbol: str):
+    """Retorna deep link mobile e link web"""
+    mobile = f"profitmobile://chart/{symbol}"
+    web = f"https://profit.net.br/chart/{symbol}"
+    return mobile, web
 
 
 def analyze_trend(quote):
@@ -50,14 +46,28 @@ def select_option_for_buy(chain, signal_type):
 def format_message(ativo, signal, option, underlying_price, change_pct):
     mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
-    profit_deep = get_profit_link(ativo)
-    profit_web = get_profit_web_link(ativo)
-    return f'''{mode}\n\n{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}\n\nCenário simulado: {direction} ({change_pct:+.1f}%)\nOpção: {option['symbol']}\nStrike: R$ {float(option['strike']):.2f}\nPrêmio: R$ {float(option['price']):.2f}\nDelta: {float(option.get('delta') or 0):.2f}\nAtivo-base: R$ {underlying_price:.2f}\n\nUse apenas para validar o formato do alerta e o link.\n\n📱 <a href="{profit_deep}">Abrir no Profit Mobile</a> | 🌐 <a href="{profit_web}">Abrir no navegador</a>'''
+    mobile_link, web_link = get_profit_links(ativo)
+    
+    msg = f"""{mode}
+
+{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}
+
+Cenário simulado: {direction} ({change_pct:+.1f}%)
+Opção: {option['symbol']}
+Strike: R$ {float(option['strike']):.2f}
+Prêmio: R$ {float(option['price']):.2f}
+Delta: {float(option.get('delta') or 0):.2f}
+Ativo-base: R$ {underlying_price:.2f}
+
+Use apenas para validar o formato do alerta e o link.
+
+📱 <a href="{mobile_link}">Abrir no Profit Mobile</a> | 🌐 <a href="{web_link}">Web</a>"""
+    return msg
 
 
 async def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram não configurado: defina TELEGRAM_TOKEN e TELEGRAM_CHAT_ID.")
+        logger.warning("Telegram não configurado")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
