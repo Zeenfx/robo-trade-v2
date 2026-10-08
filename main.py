@@ -12,6 +12,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
 
+logger.info("=== CONFIGURAÇÃO ===")
+logger.info("TESTE_MODE: %s", TESTE_MODE)
+logger.info("TELEGRAM_TOKEN configurado: %s", "SIM" if TELEGRAM_TOKEN else "NÃO")
+logger.info("TELEGRAM_CHAT_ID: %s", TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID else "NÃO CONFIGURADO")
+logger.info("ATIVOS: %d", len(ATIVOS))
+logger.info("====================")
+
 
 def analyze_trend(quote):
     price = quote.price
@@ -54,9 +61,11 @@ Ativo: R$ {underlying_price:.2f}
 
 
 async def send_telegram(message, button_url):
-    """Envia mensagem com botão inline"""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram não configurado")
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN não configurado!")
+        return False
+    if not TELEGRAM_CHAT_ID:
+        logger.error("TELEGRAM_CHAT_ID não configurado!")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -70,55 +79,69 @@ async def send_telegram(message, button_url):
         }
     }
     
+    logger.info(f"Enviando Telegram para {TELEGRAM_CHAT_ID}")
+    logger.info(f"URL: {url[:50]}...")
+    logger.info(f"Botão: {button_url}")
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=15)
-            response.raise_for_status()
-            logger.info("Telegram enviado com sucesso")
-            return True
+            logger.info(f"Status: {response.status_code}")
+            if response.status_code == 200:
+                logger.info("✅ Telegram enviado!")
+                return True
+            else:
+                logger.error(f"❌ Erro: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return False
     except Exception as e:
-        logger.error(f"Erro Telegram: {e}")
-        logger.error(f"Response: {response.text if 'response' in locals() else 'N/A'}")
+        logger.error(f"❌ Exceção: {e}")
         return False
 
 
 def main():
-    logger.info("Robô iniciado | TESTE_MODE=%s | ativos=%d", TESTE_MODE, len(ATIVOS))
+    logger.info("Iniciando main()...")
     sent = 0
     errors = 0
     
     for ativo in ATIVOS:
         try:
+            logger.info(f"\n=== Processando {ativo} ===")
             quote = get_quote(ativo)
             if not quote.price:
-                logger.warning("Sem cotação para %s", ativo)
+                logger.warning("Sem cotação")
                 continue
             
+            logger.info(f"Preço: {quote.price}")
             signal, change_pct = analyze_trend(quote)
+            logger.info(f"Signal: {signal}, Change: {change_pct}%")
+            
             if not signal:
                 continue
             
             chain = get_option_chain(ativo)
+            logger.info(f"Calls: {len(chain.calls)}, Puts: {len(chain.puts)}")
+            
             option = select_option_for_buy(chain, signal)
             if not option:
-                logger.warning("Sem %s válida para %s", signal, ativo)
+                logger.warning("Sem opção válida")
                 continue
             
+            logger.info(f"Opção selecionada: {option['symbol']}")
             message = format_message(ativo, signal, option, float(quote.price), change_pct)
             button_url = f"profitmobile://chart/{ativo}"
             
-            logger.info(f"Enviando {signal} {ativo} - button: {button_url}")
             success = asyncio.run(send_telegram(message, button_url))
-            
             if success:
                 sent += 1
             else:
                 errors += 1
         except Exception as e:
-            logger.error(f"Erro ao processar {ativo}: {e}")
+            logger.error(f"Erro {ativo}: {e}")
             errors += 1
     
-    logger.info("Execução concluída | enviados=%d erros=%d", sent, errors)
+    logger.info(f"\n=== FIM ===")
+    logger.info(f"Enviados: {sent}, Erros: {errors}")
 
 
 if __name__ == "__main__":
