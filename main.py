@@ -14,6 +14,13 @@ ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3"
 
 
 def get_profit_link(symbol: str) -> str:
+    """Deep link para Profit Mobile + fallback web"""
+    # Deep link direto pro app
+    return f"profitmobile://chart/{symbol}"
+
+
+def get_profit_web_link(symbol: str) -> str:
+    """Link web de fallback"""
     return f"https://profit.net.br/chart/{symbol}"
 
 
@@ -43,7 +50,9 @@ def select_option_for_buy(chain, signal_type):
 def format_message(ativo, signal, option, underlying_price, change_pct):
     mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
-    return f'''{mode}\n\n{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}\n\nCenário simulado: {direction} ({change_pct:+.1f}%)\nOpção: {option['symbol']}\nStrike: R$ {float(option['strike']):.2f}\nPrêmio: R$ {float(option['price']):.2f}\nDelta: {float(option.get('delta') or 0):.2f}\nAtivo-base: R$ {underlying_price:.2f}\n\nUse apenas para validar o formato do alerta e o link.\n\n<a href="{get_profit_link(ativo)}">Abrir ativo-base no Profit</a>'''
+    profit_deep = get_profit_link(ativo)
+    profit_web = get_profit_web_link(ativo)
+    return f'''{mode}\n\n{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}\n\nCenário simulado: {direction} ({change_pct:+.1f}%)\nOpção: {option['symbol']}\nStrike: R$ {float(option['strike']):.2f}\nPrêmio: R$ {float(option['price']):.2f}\nDelta: {float(option.get('delta') or 0):.2f}\nAtivo-base: R$ {underlying_price:.2f}\n\nUse apenas para validar o formato do alerta e o link.\n\n📱 <a href="{profit_deep}">Abrir no Profit Mobile</a> | 🌐 <a href="{profit_web}">Abrir no navegador</a>'''
 
 
 async def send_telegram(message):
