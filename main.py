@@ -39,7 +39,7 @@ def select_option_for_buy(chain, signal_type):
 def format_message(ativo, signal, option, underlying_price, change_pct):
     mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
-    profit_link = f"https://profit.net.br/chart/{ativo}"
+    profit_link = f"profit://chart/{ativo}"
     
     return f"""{mode} {signal} {ativo} - {direction}
 
