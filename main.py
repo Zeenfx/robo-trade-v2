@@ -6,10 +6,9 @@ from brapi_client import get_quote, get_option_chain
 
 logger = logging.getLogger(__name__)
 
-TESTE_MODE = os.getenv("TESTE_MODE", "true").lower() == "true"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
+ATIVOS = ["PETR4", "VALE3", "ITUB4", "MGLU3"]
 
 
 def analyze_trend(quote):
@@ -17,8 +16,6 @@ def analyze_trend(quote):
     if not price:
         return None, 0.0
     change_pct = float(quote._data.get("changePercent") or 0.0)
-    if TESTE_MODE:
-        return ("CALL", 2.8) if sum(map(ord, quote.symbol)) % 2 == 0 else ("PUT", -2.6)
     if change_pct >= 2.0:
         return "CALL", change_pct
     if change_pct <= -2.0:
@@ -36,9 +33,7 @@ def select_option_for_buy(chain, signal_type):
 
 
 def format_message(ativo, signal, option, underlying_price, change_pct):
-    mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
-    
-    return f"""{mode} {signal} {ativo}
+    return f"""{signal} {ativo}
 
 Opção: {option['symbol']}
 Strike: R$ {float(option['strike']):.2f}
@@ -46,7 +41,7 @@ Prêmio: R$ {float(option['price']):.2f}
 Delta: {float(option.get('delta') or 0):.2f}
 Ativo: R$ {underlying_price:.2f}
 
-[NÃO OPERAR - TESTE]"""
+[ESTUDO - NÃO É RECOMENDAÇÃO]"""
 
 
 async def send_telegram(message):
