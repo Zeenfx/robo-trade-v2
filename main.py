@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-from datetime import datetime, UTC
 import httpx
 from brapi_client import get_quote, get_option_chain
 
@@ -38,18 +37,14 @@ def select_option_for_buy(chain, signal_type):
 
 def format_message(ativo, signal, option, underlying_price, change_pct):
     mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
-    direction = "ALTA" if signal == "CALL" else "BAIXA"
-    profit_link = f"profit://chart/{ativo}"
     
-    return f"""{mode} {signal} {ativo} - {direction}
+    return f"""{mode} {signal} {ativo}
 
 Opção: {option['symbol']}
 Strike: R$ {float(option['strike']):.2f}
 Prêmio: R$ {float(option['price']):.2f}
 Delta: {float(option.get('delta') or 0):.2f}
 Ativo: R$ {underlying_price:.2f}
-
-Abrir no Profit: {profit_link}
 
 [NÃO OPERAR - TESTE]"""
 
