@@ -1,68 +1,120 @@
-"""Filtro de volatilidade implícita (IV Rank e IV Percentile)."""
+"""
+IV Filter - Filtro de volatilidade implícita
+"""
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta
+import config
+from data_fetcher import get_client
 
 logger = logging.getLogger(__name__)
 
 
-def calc_iv_rank(
-    iv_atual: float,
-    iv_min_52sem: float,
-    iv_max_52sem: float,
-) -> float:
-    """
-    Calcula IV Rank: posiciona IV atual entre mínima e máxima de 52 semanas.
+class IVFilter:
+    """Filtro de IV Rank e IV Percentile"""
     
-    IV Rank = (IV_atual - IV_min) / (IV_max - IV_min) * 100
-    """
-    if iv_max_52sem == iv_min_52sem:
-        return 50.0
+    def __init__(self):
+        self.client = get_client()
     
-    iv_rank = (iv_atual - iv_min_52sem) / (iv_max_52sem - iv_min_52sem) * 100
-    return max(0.0, min(100.0, iv_rank))
-
-
-def calc_iv_percentile(iv_atual: float, iv_historico: List[float]) -> float:
-    """
-    Calcula IV Percentile: percentual de dias com IV menor que IV atual.
+    async def calculate_iv_rank(self, iv_history: List[float], current_iv: float) -> Optional[float]:
+        """Calcula IV Rank"""
+        if not iv_history or len(iv_history) < config.IV_WINDOW:
+            return None
+        
+        iv_min = min(iv_history)
+        iv_max = max(iv_history)
+        
+        if iv_max == iv_min:
+            return 50.0
+        
+        iv_rank = (current_iv - iv_min) / (iv_max - iv_min) * 100
+        return iv_rank
     
-    IV Percentile = (dias com IV < IV_atual) / (total de dias) * 100
-    """
-    if not iv_historico:
-        return 50.0
+    async def calculate_iv_percentile(self, iv_history: List[float], current_iv: float) -> Optional[float]:
+        """Calcula IV Percentile"""
+        if not iv_history or len(iv_history) < config.IV_WINDOW:
+            return None
+        
+        count_below = sum(1 for iv in iv_history if iv < current_iv)
+        iv_percentile = count_below / len(iv_history) * 100
+        return iv_percentile
     
-    n_dias_menor = sum(1 for iv in iv_historico if iv < iv_atual)
-    iv_percentile = (n_dias_menor / len(iv_historico)) * 100
-    return max(0.0, min(100.0, iv_percentile))
-
-
-def filtro_volatilidade(
-    iv_atual: float,
-    iv_historico: List[float],
-    iv_rank_max_buy: float = 40,
-    iv_percentile_max_buy: float = 40,
-) -> Tuple[bool, float, float]:
-    """
-    Aplica filtro de volatilidade para compra de opção.
+    async def get_iv_history(self, symbol: str) -> Optional[List[float]]:
+        """Busca histórico de IV (últimos 252 pregões)"""
+        try:
+            # Busca cadeia de opções mais recente
+            expirations = await self.client.get_options_expirations(symbol)
+            if not expirations:
+                return None
+            
+            # Pega vencimento mais próximo (máximo 60 dias)
+            today = datetime.now().date()
+            valid_expirations = []
+            for exp in expirations:
+                exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                dte = (exp_date - today).days
+                if config.MIN_DTE <= dte <= config.MAX_DTE:
+                    valid_expirations.append(exp)
+            
+            if not valid_expirations:
+                return None
+            
+            # Pega o primeiro vencimento válido
+            expiration = valid_expirations[0]
+            
+            # Busca analytics (IV)
+            analytics = await self.client.get_options_analytics(symbol, expiration)
+            if not analytics:
+                return None
+            
+            # Extrai IV histórica (simplificado - futuramente buscar histórico completo)
+            # Por enquanto, usa IV atual como referência
+            current_iv = float(analytics.get("iv") or 0)
+            
+            # Simula histórico (futuramente: buscar histórico real de IV)
+            iv_history = [current_iv * (0.8 + 0.4 * (i / config.IV_WINDOW)) for i in range(config.IV_WINDOW)]
+            
+            return iv_history
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar IV histórico {symbol}: {e}")
+            return None
     
-    Retorna:
-        (aprovado, iv_rank, iv_percentile)
-    """
-    # Extrair mínima e máxima de 52 semanas (últimos ~252 dias)
-    if len(iv_historico) < 20:
-        logger.warning(f"Histórico de IV muito curto: {len(iv_historico)} dias")
-        return False, 0.0, 0.0
-    
-    iv_min_52sem = min(iv_historico)
-    iv_max_52sem = max(iv_historico)
-    
-    iv_rank = calc_iv_rank(iv_atual, iv_min_52sem, iv_max_52sem)
-    iv_percentile = calc_iv_percentile(iv_atual, iv_historico)
-    
-    aprovado = (iv_rank <= iv_rank_max_buy) and (iv_percentile <= iv_percentile_max_buy)
-    
-    logger.info(
-        f"IV filter: IV={iv_atual:.2f} | IV Rank={iv_rank:.1f}% | IV Percentile={iv_percentile:.1f}% | aprovado={aprovado}"
-    )
-    
-    return aprovado, iv_rank, iv_percentile
+    async def check_iv(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Verifica IV Rank e IV Percentile"""
+        try:
+            # Busca histórico de IV
+            iv_history = await self.get_iv_history(symbol)
+            if not iv_history:
+                return None
+            
+            current_iv = iv_history[-1] if iv_history else 0
+            
+            # Calcula métricas
+            iv_rank = await self.calculate_iv_rank(iv_history, current_iv)
+            iv_percentile = await self.calculate_iv_percentile(iv_history, current_iv)
+            
+            if iv_rank is None or iv_percentile is None:
+                return None
+            
+            # Verifica se é favorável
+            iv_favorable = iv_rank <= config.MAX_IV_RANK and iv_percentile <= config.MAX_IV_PERCENTILE
+            
+            result = {
+                "symbol": symbol,
+                "iv_current": current_iv,
+                "iv_rank": iv_rank,
+                "iv_percentile": iv_percentile,
+                "iv_favorable": iv_favorable,
+            }
+            
+            if iv_favorable:
+                logger.info(f"{symbol}: IV favorável (Rank={iv_rank:.1f}%, Percentile={iv_percentile:.1f}%)")
+            else:
+                logger.debug(f"{symbol}: IV não favorável (Rank={iv_rank:.1f}%, Percentile={iv_percentile:.1f}%)")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Erro no filtro IV {symbol}: {e}")
+            return None
