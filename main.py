@@ -53,11 +53,12 @@ Ativo: R$ {underlying_price:.2f}
     return msg
 
 
-async def send_telegram_with_button(message, button_url):
+async def send_telegram(message, button_url):
     """Envia mensagem com botão inline"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram não configurado")
-        return
+        return False
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -68,35 +69,56 @@ async def send_telegram_with_button(message, button_url):
             ]]
         }
     }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=payload, timeout=15)
-        response.raise_for_status()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+            logger.info("Telegram enviado com sucesso")
+            return True
+    except Exception as e:
+        logger.error(f"Erro Telegram: {e}")
+        logger.error(f"Response: {response.text if 'response' in locals() else 'N/A'}")
+        return False
 
 
 def main():
     logger.info("Robô iniciado | TESTE_MODE=%s | ativos=%d", TESTE_MODE, len(ATIVOS))
     sent = 0
+    errors = 0
+    
     for ativo in ATIVOS:
-        quote = get_quote(ativo)
-        if not quote.price:
-            logger.warning("Sem cotação para %s", ativo)
-            continue
-        signal, change_pct = analyze_trend(quote)
-        if not signal:
-            continue
-        chain = get_option_chain(ativo)
-        option = select_option_for_buy(chain, signal)
-        if not option:
-            logger.warning("Sem %s válida para %s", signal, ativo)
-            continue
-        message = format_message(ativo, signal, option, float(quote.price), change_pct)
-        
-        # Botão com deep link
-        button_url = f"profitmobile://chart/{ativo}"
-        
-        asyncio.run(send_telegram_with_button(message, button_url))
-        sent += 1
-    logger.info("Execução concluída | alertas enviados=%d", sent)
+        try:
+            quote = get_quote(ativo)
+            if not quote.price:
+                logger.warning("Sem cotação para %s", ativo)
+                continue
+            
+            signal, change_pct = analyze_trend(quote)
+            if not signal:
+                continue
+            
+            chain = get_option_chain(ativo)
+            option = select_option_for_buy(chain, signal)
+            if not option:
+                logger.warning("Sem %s válida para %s", signal, ativo)
+                continue
+            
+            message = format_message(ativo, signal, option, float(quote.price), change_pct)
+            button_url = f"profitmobile://chart/{ativo}"
+            
+            logger.info(f"Enviando {signal} {ativo} - button: {button_url}")
+            success = asyncio.run(send_telegram(message, button_url))
+            
+            if success:
+                sent += 1
+            else:
+                errors += 1
+        except Exception as e:
+            logger.error(f"Erro ao processar {ativo}: {e}")
+            errors += 1
+    
+    logger.info("Execução concluída | enviados=%d erros=%d", sent, errors)
 
 
 if __name__ == "__main__":
