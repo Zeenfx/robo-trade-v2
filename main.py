@@ -37,34 +37,39 @@ def select_option_for_buy(chain, signal_type):
 
 
 def format_message(ativo, signal, option, underlying_price, change_pct):
-    mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
+    mode = "🧪 TESTE" if TESTE_MODE else "⚠️ ESTUDO"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
     
-    # Link direto - SEM HTML, link puro
-    mobile_link = f"profitmobile://chart/{ativo}"
-    
-    msg = f"""{mode} {signal} {ativo} - {direction} ({change_pct:+.1f}%)
+    msg = f"""{mode} - {signal} {ativo}
 
+Cenário: {direction} ({change_pct:+.1f}%)
 Opção: {option['symbol']}
 Strike: R$ {float(option['strike']):.2f}
 Prêmio: R$ {float(option['price']):.2f}
 Delta: {float(option.get('delta') or 0):.2f}
 Ativo: R$ {underlying_price:.2f}
 
-Link Profit Mobile:
-{mobile_link}
-
 [NÃO OPERAR - APENAS TESTE]"""
     return msg
 
 
-async def send_telegram(message):
+async def send_telegram_with_button(message, button_url):
+    """Envia mensagem com botão inline"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram não configurado")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "📈 Abrir no Profit", "url": button_url}
+            ]]
+        }
+    }
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
+        response = await client.post(url, json=payload, timeout=15)
         response.raise_for_status()
 
 
@@ -85,7 +90,11 @@ def main():
             logger.warning("Sem %s válida para %s", signal, ativo)
             continue
         message = format_message(ativo, signal, option, float(quote.price), change_pct)
-        asyncio.run(send_telegram(message))
+        
+        # Botão com deep link
+        button_url = f"profitmobile://chart/{ativo}"
+        
+        asyncio.run(send_telegram_with_button(message, button_url))
         sent += 1
     logger.info("Execução concluída | alertas enviados=%d", sent)
 
