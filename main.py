@@ -37,27 +37,24 @@ def select_option_for_buy(chain, signal_type):
 
 
 def format_message(ativo, signal, option, underlying_price, change_pct):
-    mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
+    mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
     
-    # LINKS CORRETOS - PROFITMOBILE://
+    # Link direto - SEM HTML, link puro
     mobile_link = f"profitmobile://chart/{ativo}"
-    web_link = f"https://profit.net.br/chart/{ativo}"
     
-    msg = f"""{mode}
+    msg = f"""{mode} {signal} {ativo} - {direction} ({change_pct:+.1f}%)
 
-{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}
-
-Cenário simulado: {direction} ({change_pct:+.1f}%)
 Opção: {option['symbol']}
 Strike: R$ {float(option['strike']):.2f}
 Prêmio: R$ {float(option['price']):.2f}
 Delta: {float(option.get('delta') or 0):.2f}
-Ativo-base: R$ {underlying_price:.2f}
+Ativo: R$ {underlying_price:.2f}
 
-Use apenas para validar o formato do alerta e o link.
+Link Profit Mobile:
+{mobile_link}
 
-📱 <a href="{mobile_link}">Abrir no Profit Mobile</a> | 🌐 <a href="{web_link}">Web</a>"""
+[NÃO OPERAR - APENAS TESTE]"""
     return msg
 
 
@@ -67,7 +64,7 @@ async def send_telegram(message):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=15)
+        response = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
         response.raise_for_status()
 
 
