@@ -16,9 +16,9 @@ def analyze_trend(quote):
     if not price:
         return None, 0.0
     change_pct = float(quote._data.get("changePercent") or 0.0)
-    if change_pct >= 2.0:
+    if change_pct >= 1.5:
         return "CALL", change_pct
-    if change_pct <= -2.0:
+    if change_pct <= -1.5:
         return "PUT", change_pct
     return None, change_pct
 
