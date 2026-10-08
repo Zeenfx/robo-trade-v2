@@ -6,59 +6,103 @@ from brapi_client import get_quote, get_option_chain
 
 logger = logging.getLogger(__name__)
 
-DELTA_ALVO = 0.3
 TELEGRAM_TOKEN = "7518015689:AAH8BfzKj8vN9G5L2qR4mT6sU8wX0yZ1aB3"
 CHAT_ID = "6079803525"
 
-# Universo expandido - 30 ações líquidas com opções da B3
+# Universo de ações
 ATIVOS = [
-    # Blue chips
     'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'ABEV3', 'B3SA3',
     'WEGE3', 'RENT3', 'LREN3', 'SUZB3', 'CCRO3', 'CMIG4',
-    # Varejo
     'MGLU3', 'VVAR3', 'BHIA3', 'AMER3', 'LAME3', 'GUAR3',
-    # Elétricas/Utilities
     'CPFE3', 'CSNA3', 'EGIE3', 'ENBR3', 'EQTL3', 'SBSP3',
-    # Outros setores
     'EMBR3', 'RAIL3', 'RADL3', 'CYRE3', 'MULT3', 'HAPV3'
 ]
 
-def find_best_call(calls, delta_alvo=0.3):
-    """Encontra a call mais próxima do delta alvo"""
-    if not calls:
-        return None
-    best = min(calls, key=lambda c: abs(c.get('delta', 0.5) - delta_alvo))
-    return best
-
-def get_profit_link(symbol: str, option_symbol: str) -> str:
-    """Gera link direto para o gráfico no Profit (Nelogica)"""
-    # Link universal que abre no Profit mobile se instalado
+def get_profit_link(symbol: str) -> str:
     return f"https://profit.net.br/chart/{symbol}"
 
-def format_message(ativo: str, option: dict, underlying_price: float) -> str:
-    """Formata mensagem para Telegram"""
-    option_type = "CALL" if option.get('side') == 'call' else "PUT"
-    moneyness = ((underlying_price - option['strike']) / underlying_price) * 100
-    moneyness_str = f"{'ITM' if moneyness > 0 else 'OTM'} ({moneyness:+.1f}%)"
+def analyze_trend(quote, history=None):
+    """
+    Analisa tendência do ativo.
+    Retorna: 'CALL', 'PUT' ou None
+    """
+    price = quote.price
+    if not price:
+        return None, 0
     
-    profit_link = get_profit_link(ativo, option['symbol'])
+    # Critérios simples de tendência (pode expandir com análise técnica)
+    # Por enquanto, usa variação do dia como proxy
+    change_pct = quote._data.get('changePercent', 0)
     
-    msg = f"""🚨 GATILHO DE OPÇÃO
+    # CALL: ativo subindo forte (> 2%)
+    if change_pct > 2.0:
+        return 'CALL', change_pct
+    
+    # PUT: ativo caindo forte (< -2%)
+    if change_pct < -2.0:
+        return 'PUT', abs(change_pct)
+    
+    return None, change_pct
 
-📈 Ativo: {ativo}
-🔹 Tipo: {option_type}
+def select_option_for_buy(chain, signal_type, underlying_price):
+    """
+    Seleciona melhor opção para COMPRA (call ou put).
+    
+    CALL: delta 0.50-0.70 (ITM ou ATM)
+    PUT: delta 0.30-0.50 (OTM ou ATM)
+    """
+    if signal_type == 'CALL':
+        options = chain.calls
+        delta_min, delta_max = 0.50, 0.70
+    else:  # PUT
+        options = chain.puts
+        delta_min, delta_max = 0.30, 0.50
+    
+    if not options:
+        return None
+    
+    # Filtra opções com delta no range e preço > 0
+    valid = [
+        opt for opt in options
+        if delta_min <= opt.get('delta', 0) <= delta_max
+        and opt.get('price', 0) > 0
+    ]
+    
+    if not valid:
+        # Fallback: pega a mais próxima do delta alvo
+        target_delta = (delta_min + delta_max) / 2
+        valid = [opt for opt in options if opt.get('price', 0) > 0]
+        if not valid:
+            return None
+        return min(valid, key=lambda x: abs(x.get('delta', 0.5) - target_delta))
+    
+    # Ordena por volume (liquidez) e pega a mais líquida
+    best = max(valid, key=lambda x: x.get('volume', 0))
+    return best
+
+def format_message(ativo: str, signal: str, option: dict, underlying_price: float, change_pct: float) -> str:
+    """Formata mensagem para Telegram"""
+    emoji = "🟢" if signal == 'CALL' else "🔴"
+    action = "COMPRE CALL" if signal == 'CALL' else "COMPRE PUT"
+    direction = "ALTA" if signal == 'CALL' else "BAIXA"
+    
+    profit_link = get_profit_link(ativo)
+    
+    msg = f"""{emoji} {action} - {ativo}
+
+📈 Tendência: {direction} ({change_pct:+.1f}% hoje)
 🔹 Opção: {option['symbol']}
+🔹 Tipo: {signal}
 🔹 Strike: R$ {option['strike']:.2f}
 🔹 Preço: R$ {option['price']:.2f}
 🔹 Delta: {option.get('delta', 0):.2f}
 🔹 IV: {option.get('iv', 0)*100:.1f}%
 🔹 Volume: {option.get('volume', 0):,}
-🔹 Open Interest: {option.get('open_interest', 0):,}
 
-💰 Preço do Ativo: R$ {underlying_price:.2f}
-📊 Moneyness: {moneyness_str}
+💰 Ativo: R$ {underlying_price:.2f}
 
-⚙️ Setup: Delta ~{DELTA_ALVO} (alvo: {DELTA_ALVO})
+🎯 Alvo: 2x-3x se ativo confirmar tendência
+⚠️ Stop: -50% do prêmio
 
 🔗 <a href="{profit_link}">Abrir no Profit</a>
 """
@@ -76,52 +120,59 @@ async def send_telegram(msg: str):
         try:
             resp = await client.post(url, json=payload, timeout=10)
             resp.raise_for_status()
-            logger.info("Telegram enviado com sucesso")
+            logger.info("Telegram enviado")
         except Exception as e:
-            logger.error(f"Erro ao enviar Telegram: {e}")
+            logger.error(f"Erro Telegram: {e}")
 
 def main():
     logger.info(f'Horário UTC: {datetime.now(UTC).isoformat()}')
-    logger.info(f'MODO=opcoes, TESTE_MODE=False')
-    logger.info(f'Universo: {len(ATIVOS)} acoes')
-    logger.info(f'DELTA_ALVO={DELTA_ALVO}')
+    logger.info(f'Robô de Opções Direcionais')
+    logger.info(f'Universo: {len(ATIVOS)} ações')
+    logger.info(f'Estratégia: Compra de CALL (alta) ou PUT (baixa)')
     
-    gatilhos_encontrados = []
+    sinais_encontrados = []
     
     for ativo in ATIVOS:
-        logger.info(f'Analisando gatilho para {ativo}')
+        logger.info(f'Analisando {ativo}')
         
-        # Busca preço do ativo
+        # Preço do ativo
         quote = get_quote(ativo)
-        underlying_price = quote.price
-        if not underlying_price:
-            logger.warning(f"Sem preço para {ativo}")
+        if not quote.price:
             continue
         
-        # Busca cadeia de opções
+        # Analisa tendência
+        signal, change_pct = analyze_trend(quote)
+        if not signal:
+            logger.info(f'{ativo}: sem tendência clara ({change_pct:+.1f}%)')
+            continue
+        
+        logger.info(f'{ativo}: sinal {signal} ({change_pct:+.1f}%)')
+        
+        # Cadeia de opções
         chain = get_option_chain(ativo)
-        if not chain.calls:
-            logger.warning(f'Screener: sem calls para {ativo}')
+        if not chain.calls and not chain.puts:
+            logger.warning(f'{ativo}: sem opções')
             continue
         
-        # Seleciona melhor call
-        best_call = find_best_call(chain.calls, DELTA_ALVO)
-        if best_call and best_call.get('price') and best_call['price'] > 0:
-            logger.info(f"Gatilho encontrado: {ativo} - {best_call['symbol']} @ R${best_call['price']:.2f}")
-            gatilhos_encontrados.append((ativo, best_call, underlying_price))
-        else:
-            logger.warning(f'Screener: nenhuma call válida para {ativo}')
+        # Seleciona opção para compra
+        option = select_option_for_buy(chain, signal, quote.price)
+        if not option:
+            logger.warning(f'{ativo}: nenhuma opção adequada para {signal}')
+            continue
+        
+        logger.info(f"Sinal: {ativo} - {signal} - {option['symbol']} @ R${option['price']:.2f}")
+        sinais_encontrados.append((ativo, signal, option, quote.price, change_pct))
     
-    # Envia alertas no Telegram
-    if gatilhos_encontrados:
-        logger.info(f"Enviando {len(gatilhos_encontrados)} alertas no Telegram")
-        for ativo, option, price in gatilhos_encontrados:
-            msg = format_message(ativo, option, price)
+    # Envia alertas
+    if sinais_encontrados:
+        logger.info(f"Enviando {len(sinais_encontrados)} sinais no Telegram")
+        for ativo, signal, option, price, change in sinais_encontrados:
+            msg = format_message(ativo, signal, option, price, change)
             asyncio.run(send_telegram(msg))
     else:
-        logger.info("Nenhum gatilho encontrado nesta execução")
+        logger.info("Nenhum sinal de compra hoje")
     
-    logger.info('Fim da execução (v3).')
+    logger.info('Fim da execução.')
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
