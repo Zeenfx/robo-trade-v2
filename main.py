@@ -13,13 +13,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
 
 
-def get_profit_links(symbol: str):
-    """Retorna deep link mobile e link web"""
-    mobile = f"profitmobile://chart/{symbol}"
-    web = f"https://profit.net.br/chart/{symbol}"
-    return mobile, web
-
-
 def analyze_trend(quote):
     price = quote.price
     if not price:
@@ -46,7 +39,10 @@ def select_option_for_buy(chain, signal_type):
 def format_message(ativo, signal, option, underlying_price, change_pct):
     mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
-    mobile_link, web_link = get_profit_links(ativo)
+    
+    # LINKS CORRETOS - PROFITMOBILE://
+    mobile_link = f"profitmobile://chart/{ativo}"
+    web_link = f"https://profit.net.br/chart/{ativo}"
     
     msg = f"""{mode}
 
