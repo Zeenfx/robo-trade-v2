@@ -13,10 +13,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
 
 
-def get_profit_link(symbol: str) -> str:
-    return f"profitmobile://chart/{symbol}"
-
-
 def analyze_trend(quote):
     price = quote.price
     if not price:
@@ -41,46 +37,36 @@ def select_option_for_buy(chain, signal_type):
 
 
 def format_message(ativo, signal, option, underlying_price, change_pct):
-    mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
+    mode = "[TESTE]" if TESTE_MODE else "[ESTUDO]"
     direction = "ALTA" if signal == "CALL" else "BAIXA"
-    profit_link = get_profit_link(ativo)
-    return f'''{mode}
+    profit_link = f"https://profit.net.br/chart/{ativo}"
+    
+    return f"""{mode} {signal} {ativo} - {direction}
 
-{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}
-
-Cenário simulado: {direction} ({change_pct:+.1f}%)
 Opção: {option['symbol']}
 Strike: R$ {float(option['strike']):.2f}
 Prêmio: R$ {float(option['price']):.2f}
 Delta: {float(option.get('delta') or 0):.2f}
-Ativo-base: R$ {underlying_price:.2f}
+Ativo: R$ {underlying_price:.2f}
 
-Link: {profit_link}
+Abrir no Profit: {profit_link}
 
-[NÃO OPERAR]'''
+[NÃO OPERAR - TESTE]"""
 
 
 async def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram não configurado")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
-            response.raise_for_status()
-            logger.info("Telegram enviado")
-        except Exception as e:
-            logger.error(f"Erro: {e}")
+        await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
 
 
 def main():
-    logger.info("Robô iniciado | TESTE_MODE=%s | ativos=%d", TESTE_MODE, len(ATIVOS))
-    sent = 0
+    logger.info("Iniciando")
     for ativo in ATIVOS:
         quote = get_quote(ativo)
         if not quote.price:
-            logger.warning("Sem cotação para %s", ativo)
             continue
         signal, change_pct = analyze_trend(quote)
         if not signal:
@@ -88,12 +74,10 @@ def main():
         chain = get_option_chain(ativo)
         option = select_option_for_buy(chain, signal)
         if not option:
-            logger.warning("Sem %s válida para %s", signal, ativo)
             continue
         message = format_message(ativo, signal, option, float(quote.price), change_pct)
         await send_telegram(message)
-        sent += 1
-    logger.info("Execução concluída | alertas enviados=%d", sent)
+    logger.info("Fim")
 
 
 if __name__ == "__main__":
