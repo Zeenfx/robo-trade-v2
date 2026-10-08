@@ -1,24 +1,25 @@
 import os
 import logging
-import time
+import asyncio
+from datetime import datetime, UTC
 import httpx
 from brapi_client import get_quote, get_option_chain
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 TESTE_MODE = os.getenv("TESTE_MODE", "true").lower() == "true"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+ATIVOS = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "LREN3", "SUZB3", "MGLU3", "CMIG4"]
 
-logger.info(f"TESTE_MODE={TESTE_MODE}")
-logger.info(f"TELEGRAM_TOKEN={'CONFIGURADO' if TELEGRAM_TOKEN else 'NAO CONFIGURADO'}")
-logger.info(f"TELEGRAM_CHAT_ID={TELEGRAM_CHAT_ID or 'NAO CONFIGURADO'}")
 
-ATIVOS = ["PETR4", "VALE3", "ITUB4"]
+def get_profit_link(symbol: str) -> str:
+    return f"profitmobile://chart/{symbol}"
+
 
 def analyze_trend(quote):
-    if not quote.price:
+    price = quote.price
+    if not price:
         return None, 0.0
     change_pct = float(quote._data.get("changePercent") or 0.0)
     if TESTE_MODE:
@@ -29,67 +30,72 @@ def analyze_trend(quote):
         return "PUT", change_pct
     return None, change_pct
 
-def select_option(chain, signal_type):
+
+def select_option_for_buy(chain, signal_type):
     options = chain.calls if signal_type == "CALL" else chain.puts
     if not options:
         return None
-    target = 0.55 if signal_type == "CALL" else 0.45
-    valid = [o for o in options if float(o.get("price") or 0) > 0]
-    return min(valid, key=lambda o: abs(abs(float(o.get("delta") or 0)) - target)) if valid else None
+    target_delta = 0.55 if signal_type == "CALL" else 0.45
+    valid = [opt for opt in options if float(opt.get("price") or 0) > 0]
+    return min(valid, key=lambda opt: abs(abs(float(opt.get("delta") or 0)) - target_delta)) if valid else None
 
-def send_telegram(ativo, signal, option, price, change):
+
+def format_message(ativo, signal, option, underlying_price, change_pct):
+    mode = "🧪 TESTE — NÃO OPERAR" if TESTE_MODE else "⚠️ ANÁLISE PARA ESTUDO — NÃO É RECOMENDAÇÃO"
+    direction = "ALTA" if signal == "CALL" else "BAIXA"
+    profit_link = get_profit_link(ativo)
+    return f'''{mode}
+
+{'🟢' if signal == 'CALL' else '🔴'} {signal} DIRECIONAL — {ativo}
+
+Cenário simulado: {direction} ({change_pct:+.1f}%)
+Opção: {option['symbol']}
+Strike: R$ {float(option['strike']):.2f}
+Prêmio: R$ {float(option['price']):.2f}
+Delta: {float(option.get('delta') or 0):.2f}
+Ativo-base: R$ {underlying_price:.2f}
+
+Link: {profit_link}
+
+[NÃO OPERAR]'''
+
+
+async def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("Telegram nao configurado!")
-        return False
-    
+        logger.warning("Telegram não configurado")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    msg = f"TESTE {signal} {ativo}\nOpcao: {option['symbol']}\nStrike: {option['strike']}\nPremio: {option['price']}\nAtivo: {price}\n\nLink: profitmobile://chart/{ativo}"
-    
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg,
-        "reply_markup": {
-            "inline_keyboard": [[
-                {"text": "Abrir Profit", "url": f"profitmobile://chart/{ativo}"}
-            ]]
-        }
-    }
-    
-    try:
-        with httpx.Client() as client:
-            resp = client.post(url, json=payload, timeout=15)
-            logger.info(f"Telegram status: {resp.status_code}")
-            if resp.status_code == 200:
-                logger.info("SUCESSO!")
-                return True
-            else:
-                logger.error(f"Erro: {resp.text}")
-                return False
-    except Exception as e:
-        logger.error(f"Excecao: {e}")
-        return False
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
+            response.raise_for_status()
+            logger.info("Telegram enviado")
+        except Exception as e:
+            logger.error(f"Erro: {e}")
 
-logger.info("Iniciando robo...")
-for ativo in ATIVOS:
-    logger.info(f"Processando {ativo}")
-    quote = get_quote(ativo)
-    if not quote.price:
-        logger.warning(f"Sem preco {ativo}")
-        continue
-    
-    signal, change = analyze_trend(quote)
-    logger.info(f"Signal: {signal}")
-    if not signal:
-        continue
-    
-    chain = get_option_chain(ativo)
-    option = select_option(chain, signal)
-    if not option:
-        logger.warning("Sem opcao")
-        continue
-    
-    logger.info(f"Enviando {option['symbol']}")
-    send_telegram(ativo, signal, option, quote.price, change)
-    time.sleep(1)
 
-logger.info("Fim.")
+def main():
+    logger.info("Robô iniciado | TESTE_MODE=%s | ativos=%d", TESTE_MODE, len(ATIVOS))
+    sent = 0
+    for ativo in ATIVOS:
+        quote = get_quote(ativo)
+        if not quote.price:
+            logger.warning("Sem cotação para %s", ativo)
+            continue
+        signal, change_pct = analyze_trend(quote)
+        if not signal:
+            continue
+        chain = get_option_chain(ativo)
+        option = select_option_for_buy(chain, signal)
+        if not option:
+            logger.warning("Sem %s válida para %s", signal, ativo)
+            continue
+        message = format_message(ativo, signal, option, float(quote.price), change_pct)
+        await send_telegram(message)
+        sent += 1
+    logger.info("Execução concluída | alertas enviados=%d", sent)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    asyncio.run(main())
