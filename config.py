@@ -1,100 +1,66 @@
-"""
-Configurações do RobTrade V7
-"""
+"""Parametros e credenciais. Tudo ajustavel por variavel de ambiente ou aqui."""
 import os
-from datetime import datetime, time
 
-# ==================== API ====================
-BRAPI_TOKEN = os.getenv("BRAPI_TOKEN", "")
-BRAPI_BASE_URL = "https://brapi.dev/api/v2"
+def _load_env(path=".env"):
+    """Carrega .env simples (CHAVE=valor) sem sobrescrever variaveis ja definidas."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(here, path)
+    if os.path.exists(p):
+        for line in open(p, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-# ==================== Telegram ====================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+_load_env()
+
+BRAPI_TOKEN = os.getenv("BRAPI_TOKEN") or os.getenv("BRAPI_API_KEY", "")
+BRAPI_BASE = "https://brapi.dev/api/v2"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
+ON_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
+_EXPLICIT_DB = os.getenv("DB_PATH") or os.getenv("DATABASE_PATH")
+DB_PATH = _EXPLICIT_DB or (os.path.join(_VOL, "robo_trade.db") if _VOL else os.path.join(_HERE, "robo_trade.db"))
+DB_PERSISTENT = bool(_EXPLICIT_DB or _VOL) or not ON_RAILWAY   # no Railway sem Volume o banco some a cada execucao
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+# Link do Profit ({ticker} = codigo da opcao ou do ativo). "off" desativa.
+PROFIT_LINK_TEMPLATE = os.getenv("PROFIT_LINK_TEMPLATE", "https://profitchart.com.br/chart?ticker={ticker}&timeframe=5m")
+TZ = "America/Sao_Paulo"
+# Mensagem das 09:30 com a watchlist (desligada: especificacao pede nenhum aviso antes do sinal completo)
+WATCHLIST_MSG = os.getenv("WATCHLIST_MSG", "false").lower() == "true"
 
-# ==================== Universo de Ativos ====================
-# Lista dinâmica: robô identifica ativos com opções
-# Filtro mínimo de liquidez
-MIN_VOLUME_MEDIO = 10_000_000  # R$ 10M volume médio diário
-MIN_PRECO = 2.0  # Preço mínimo da ação
+DEFAULT_UNIVERSE = [
+    "PETR4", "VALE3", "PRIO3", "BBAS3", "B3SA3", "BBDC4", "AXIA3", "ITUB4", "BPAC11",
+    "ABEV3", "ITSA4", "MGLU3", "CSNA3", "RENT3", "LREN3", "WEGE3", "SUZB3",
+]
+UNIVERSE = [t.strip().upper() for t in os.getenv("UNIVERSE", "").split(",") if t.strip()] or DEFAULT_UNIVERSE
 
-# ==================== Triagem ====================
-# Movimento relevante (pelo menos um)
-MIN_VARIACAO_INTRADIA = 2.5  # %
-MIN_GAP = 1.5  # %
-MIN_EXPANSAO_RANGE = 1.8  # 1.8x média últimos 20 dias
+# --- Filtro de IV (opcao barata) ---
+IV_WINDOW = 252
+IV_MIN_HISTORY = 60          # minimo de pregoes para calcular rank/percentile
+IV_RANK_MAX = 25
+IV_PERCENTILE_MAX = 30
+IV_TARGET_DTE = 40           # vencimento escolhido para medir IV ATM
+IV_MIN_DTE = 25
+IV_MAX_DTE = 70
 
-# Participação acima do padrão (pelo menos um)
-MIN_VOLUME_FINANCEIRO = 1.5  # 1.5x média recente
-MIN_NUM_NEGOCIOS = 1.5  # 1.5x média recente
-MIN_VOLUME_RELATIVO = 1.5  # VR mínimo
+# --- Gatilho grafico ---
+BREAKOUT_LOOKBACK = 20       # rompimento de max/min dos ultimos N pregoes
+VR_MIN = 1.5                 # volume relativo minimo (ritmo do dia vs media 20d)
+M15_CONFIRM_CLOSES = 2       # fechamentos M15 consecutivos alem do nivel
+ATR_PERIOD = 14
+STOP_ATR_BUFFER = 0.5        # stop = nivel rompido -/+ 0.5 ATR
+MAX_STOP_ATR = 2.0           # descarta se stop > 2 ATR do preco
+RR_TARGET = 2.0              # alvo = 2x o risco
+MAX_CANDIDATES_PER_CYCLE = 5
+SESSION_START_H, SESSION_END_H = 10.0, 18.0   # para ritmo de volume
 
-# ==================== Análise Gráfica ====================
-# Timeframes
-TIMEFRAMES = ["D1", "H1", "M15"]
-
-# Tendência (MM20)
-MM_PERIOD = 20
-
-# Volume no rompimento
-MIN_VOLUME_ROMPIMENTO = 1.5  # 1.5x média 20 períodos
-
-# Pavio de rejeição
-MIN_PAVIO_REJEICAO = 2.0  # Pavio ≥ 2x corpo do candle
-
-# ==================== Volatilidade ====================
-# IV Rank e IV Percentile favoráveis
-MAX_IV_RANK = 25
-MAX_IV_PERCENTILE = 30
-IV_WINDOW = 252  # Pregões (≈ 1 ano)
-
-# ==================== Opções ====================
-# Liquidez mínima da opção
-MIN_VOLUME_OPCAO = 100  # Contratos negociados
-MIN_OPEN_INTEREST = 500  # Contratos em aberto
-MAX_SPREAD_PCT = 5.0  # Spread máximo % do preço
-
-# Vencimento
-MIN_DTE = 7  # Dias mínimos até vencimento
-MAX_DTE = 60  # Dias máximos até vencimento
-
-# Greeks (para compra de CALL/PUT)
-MIN_DELTA = 0.50  # Delta mínimo
-MAX_DELTA = 0.70  # Delta máximo
-
-# ==================== Risco ====================
-# Stop e alvo
-MIN_RISCO_RETORNO = 2.0  # Alvo ≥ 2x o risco
-MAX_STOP_PCT = 3.0  # Stop máximo 3% da entrada
-
-# ==================== Agendamento ====================
-# Horários de varredura
-PRE_ABERTURA = time(8, 30)  # Pré-abertura
-POS_ABERTURA_INICIO = time(9, 45)
-POS_ABERTURA_FIM = time(10, 15)
-PREGAO_INICIO = time(10, 15)
-PREGAO_FIM = time(17, 55)
-POS_MERCADO = time(18, 0)  # Pós-mercado
-
-# Intervalos
-INTERVALO_POS_ABERTURA = 5 * 60  # 5 minutos
-INTERVALO_PREGAO = 15 * 60  # 15 minutos
-
-# ==================== Priorização ====================
-MAX_CANDIDATOS_POR_CICLO = 5  # Máximo de candidatos analisados profundamente
-
-# ==================== Backtesting ====================
-BACKTEST_WINDOW = 365  # Últimos 365 dias
-
-# ==================== Logs ====================
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-
-# ==================== Banco de Dados ====================
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/robo_trade.db")
-
-# ==================== Estratégias Habilitadas ====================
-ESTRATEGIAS_HABILITADAS = {
-    "compra_call": True,
-    "compra_put": True,
-}
+# --- Selecao da opcao ---
+DELTA_MIN, DELTA_MAX = 0.40, 0.60
+MIN_OPEN_INTEREST = 500
+MIN_VOLUME = 50
+MAX_SPREAD_PCT = 8.0
+OPT_MIN_DTE, OPT_MAX_DTE = 30, 60
+OPTION_STOP_LOSS_PCT = 50    # manejo: sair se premio perder 50%

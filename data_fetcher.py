@@ -1,116 +1,53 @@
-"""
-Data Fetcher - Busca dados da Brapi
-"""
-import httpx
-import logging
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+"""Cliente brapi.dev (Pro). Endpoints conforme documentacao em brapi.dev/docs."""
+import time, logging
+import requests
 import config
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger("data")
 
+class BrapiError(Exception):
+    pass
 
-class BrapiClient:
-    """Cliente para API Brapi.dev"""
-    
-    def __init__(self, token: str = None):
-        self.token = token or config.BRAPI_TOKEN
-        self.base_url = config.BRAPI_BASE_URL
-        self.headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-    
-    async def get_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Busca cotação do ativo"""
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/quote/{symbol}"
-                response = await client.get(url, headers=self.headers, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", {}) if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.error(f"Erro ao buscar cotação {symbol}: {e}")
-            return None
-    
-    async def get_historical(self, symbol: str, period: str = "1d", start: str = None, end: str = None) -> Optional[List[Dict[str, Any]]]:
-        """Busca histórico de preços"""
-        try:
-            async with httpx.AsyncClient() as client:
-                if not start:
-                    start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-                if not end:
-                    end = datetime.now().strftime("%Y-%m-%d")
-                
-                url = f"{self.base_url}/history/{symbol}"
-                params = {"start": start, "end": end, "period": period}
-                response = await client.get(url, headers=self.headers, params=params, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", {}).get("values", []) if isinstance(data, dict) else []
-        except Exception as e:
-            logger.error(f"Erro ao buscar histórico {symbol}: {e}")
+class Brapi:
+    def __init__(self, token=None, base=None):
+        self.base = base or config.BRAPI_BASE
+        self.s = requests.Session()
+        self.s.headers["Authorization"] = f"Bearer {token or config.BRAPI_TOKEN}"
+
+    def _get(self, path, params, retries=3):
+        for i in range(retries):
+            r = self.s.get(f"{self.base}{path}", params=params, timeout=30)
+            if r.status_code == 429:
+                time.sleep(float(r.headers.get("Retry-After", 2 * (i + 1))))
+                continue
+            if r.status_code >= 400:
+                raise BrapiError(f"{r.status_code} {path} {params} {r.text[:200]}")
+            return r.json()
+        raise BrapiError(f"429 persistente em {path}")
+
+    def history(self, symbol, range_="3mo", interval="1d"):
+        """Candles ordenados do mais antigo ao mais recente. date = unix segundos."""
+        j = self._get("/stocks/historical", {"symbols": symbol, "range": range_, "interval": interval, "sortOrder": "asc"})
+        res = j.get("results") or []
+        if not res:
             return []
-    
-    async def get_options_expirations(self, underlying: str) -> Optional[List[str]]:
-        """Busca vencimentos de opções do ativo"""
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/options/expirations"
-                params = {"underlying": underlying}
-                response = await client.get(url, headers=self.headers, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", {}).get("expirations", []) if isinstance(data, dict) else []
-        except Exception as e:
-            logger.error(f"Erro ao buscar vencimentos {underlying}: {e}")
-            return []
-    
-    async def get_options_chain(self, underlying: str, expiration: str) -> Optional[Dict[str, Any]]:
-        """Busca cadeia de opções para um vencimento"""
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/options/chain"
-                params = {"underlying": underlying, "expiration": expiration}
-                response = await client.get(url, headers=self.headers, params=params, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", {}) if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.error(f"Erro ao buscar cadeia de opções {underlying} {expiration}: {e}")
-            return None
-    
-    async def get_options_analytics(self, underlying: str, expiration: str) -> Optional[Dict[str, Any]]:
-        """Busca analytics de opções (IV, gregas)"""
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/options/analytics"
-                params = {"underlying": underlying, "expiration": expiration}
-                response = await client.get(url, headers=self.headers, params=params, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", {}) if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.error(f"Erro ao buscar analytics {underlying} {expiration}: {e}")
-            return None
-    
-    async def get_all_stocks(self) -> Optional[List[Dict[str, Any]]]:
-        """Busca lista de todos os ativos"""
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/stocks/list"
-                response = await client.get(url, headers=self.headers, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("results", []) if isinstance(data, dict) else []
-        except Exception as e:
-            logger.error(f"Erro ao buscar lista de ativos: {e}")
-            return []
+        rows = res[0]["data"]["historicalDataPrice"]
+        return sorted([r for r in rows if r.get("close") is not None], key=lambda r: r["date"])
 
+    def expirations(self, underlying, include_expired=False):
+        p = {"underlying": underlying}
+        if include_expired: p["includeExpired"] = "true"
+        return self._get("/options/expirations", p).get("expirations", [])
 
-# Singleton
-_client: Optional[BrapiClient] = None
+    def analytics(self, underlying, expiration, date=None, side=None):
+        p = {"underlying": underlying, "expirationDate": expiration}
+        if date: p["date"] = date
+        if side: p["side"] = side
+        j = self._get("/options/analytics", p)
+        return j.get("date"), j.get("analytics", [])
 
-def get_client() -> BrapiClient:
-    global _client
-    if _client is None:
-        _client = BrapiClient()
-    return _client
+    def chain(self, underlying, expiration, side=None):
+        p = {"underlying": underlying, "expirationDate": expiration}
+        if side: p["side"] = side
+        j = self._get("/options/chain", p)
+        return j.get("date"), j.get("series", [])

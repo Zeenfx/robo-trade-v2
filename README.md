@@ -1,129 +1,43 @@
-# Robô de Trade de Opções (B3)
+# Robô Trade — alertas de compra de CALL/PUT (B3) via Telegram
 
-Robô automatizado para identificação de oportunidades em **opções de ações brasileiras (B3)**.
+Apoio à decisão. **Não executa ordens.**
 
-## Funcionalidades
+## Lógica (IV primeiro, gráfico depois)
+1. **08:30 (dados do pregão anterior, disponíveis na brapi desde ~21h):** `eod` coleta a IV ATM (vencimento ~40 DTE) de cada ativo, salva no SQLite e calcula IV Rank / IV Percentile (252 pregões). Aprovados (Rank ≤ 25 e Percentile ≤ 30) entram na **watchlist** do dia seguinte.
+2. **09:30 (opcional, desligado):** `WATCHLIST_MSG=true` envia a lista de ativos em observação.
+3. **09:45–17:45:** `intraday` (5 min até 10:10, depois 15 min) analisa **só a watchlist**: rompimento da máxima/mínima de 20 pregões, 2 fechamentos M15 confirmando, ritmo de volume ≥ 1,5x, stop = nível ∓ 0,5 ATR, alvo 1:2.
+4. Com sinal, escolhe a opção (call p/ alta, put p/ baixa): delta 0,40–0,60, 30–60 DTE, OI ≥ 500, volume ≥ 50, spread ≤ 8%. Envia mensagem curta + completa (com risco e manejo). Um alerta por ativo/direção/dia.
 
-- **Filtro de volatilidade**: IV Rank e IV Percentile para identificar opções "baratas"
-- **Gatilho técnico**: Detecta início de movimentos (CALL/PUT) baseado em:
-  - Rompimento de suporte/resistência
-  - Tendência (EMA 20/50)
-  - Momentum (MACD/RSI)
-  - Volume
-- **Seleção de opção**: Escolhe a melhor opção com critérios de:
-  - Delta (0.35-0.55)
-  - Expiração (14-42 dias)
-  - Liquidez (volume e open interest)
-  - Moneyness (ATM ou levemente OTM)
-- **Alertas no Telegram**: Mensagens acionáveis com entrada, stop, alvo e link do Profit
+Todos os limiares estão em `config.py`.
 
-## Setup
+> **Deploy:** veja `DEPLOY_RAILWAY.md`. Modo cron (`python main.py tick` a cada 5 min) ou sempre ligado (`python main.py serve`).
 
-### 1. Clone o repositório
-
-```bash
-git clone https://github.com/Zeenfx/robo-trade-v2.git
-cd robo-trade-v2
-```
-
-### 2. Instale as dependências
-
+## Rodar local
 ```bash
 pip install -r requirements.txt
+cp .env.example .env   # preencha e exporte as variáveis
+export $(grep -v '^#' .env | xargs)
+python -m pytest tests            # testes
+python main.py backfill 365       # UMA vez: reconstrói IV de 12 meses (muitas chamadas à API)
+python main.py eod                # calcula IV de hoje e monta a watchlist
+python main.py status             # mostra watchlist
+DRY_RUN=true python main.py intraday
+python main.py serve              # agendador (fuso America/Sao_Paulo)
 ```
 
-### 3. Configure as variáveis de ambiente
+## Deploy no Railway (resumo; passo a passo em DEPLOY_RAILWAY.md)
+1. Serviço a partir do repositório; `railway.json` define `python main.py tick` (cron `*/5 11-20 * * 1-5`).
+2. **Volume:** crie um Volume montado em `/data` e defina `DB_PATH=/data/robo_trade.db`. Sem volume o SQLite é apagado a cada deploy e o histórico de IV se perde.
+3. Variáveis: `BRAPI_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (e opcionais do `.env.example`).
+4. No primeiro deploy, rode o `backfill` uma vez (Railway → shell do serviço) e depois `eod`. Sem histórico (mínimo 60 pregões) nenhum ativo é aprovado.
 
-Crie um arquivo `.env` na raiz do projeto:
+Telegram: crie o bot no @BotFather e pegue o chat id enviando uma mensagem ao bot e abrindo `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 
-```bash
-# Telegram
-TELEGRAM_TOKEN=seu_bot_token_aqui
-TELEGRAM_CHAT_ID=seu_chat_id_aqui
-
-# Brapi API (https://brapi.dev)
-BRAPI_API_KEY=sua_api_key_aqui
-```
-
-**Como obter:**
-- **Telegram**: Crie um bot via [@BotFather](https://t.me/botfather) e pegue o token
-- **Brapi**: Crie conta em [brapi.dev](https://brapi.dev) e pegue sua API key (plano Pro necessário para opções)
-
-### 4. Teste localmente
-
-```bash
-python main.py
-```
-
-## Deploy no Railway
-
-1. Conecte seu repositório GitHub no Railway
-2. Adicione as variáveis de ambiente:
-   - `TELEGRAM_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-   - `BRAPI_API_KEY`
-3. O Railway fará deploy automático
-
-## Estrutura do projeto
-
-```
-robo-trade-v2/
-├── main.py           # Orquestração principal
-├── config.py         # Configurações e thresholds
-├── data_fetcher.py   # Busca de dados (Brapi)
-├── iv_filter.py      # Filtro de volatilidade (IV Rank/Percentile)
-├── analyzer.py       # Análise técnica (gatilhos CALL/PUT)
-├── screener.py       # Seleção de opções
-├── messenger.py      # Envio de mensagens (Telegram)
-├── database.py       # (opcional) Persistência de dados
-├── health_check.py   # Endpoint de saúde
-├── requirements.txt  # Dependências
-└── README.md         # Este arquivo
-```
-
-## Fluxo de execução
-
-1. **Varre universo de ativos** (PETR4, VALE3, PRIO3, etc.)
-2. **Filtra por IV**: Só continua se IV Rank ≤ 40% e IV Percentile ≤ 40%
-3. **Analisa gráfico**: Detecta CALL, PUT ou AGUARDAR
-4. **Seleciona opção**: Escolhe call/put com melhor liquidez e delta
-5. **Envia alerta**: Manda mensagem no Telegram com entrada/stop/alvo + link do Profit
-
-## Controle de ruído
-
-- Não repete alerta do mesmo ticker e tipo em menos de **60 minutos**
-- Permite novo alerta se preço variar **≥ 3%**
-
-## Ajuste de parâmetros
-
-Edite `config.py` para ajustar:
-
-- Thresholds de IV (`IV_RANK_MAX_BUY`, `IV_PERCENTILE_MAX_BUY`)
-- Delta da opção (`OPCAO_DELTA_MIN`, `OPCAO_DELTA_MAX`)
-- Expiração (`OPCAO_EXPIRY_MIN_DIAS`, `OPCAO_EXPIRY_MAX_DIAS`)
-- Liquidez mínima (`OPCAO_VOLUME_MIN_DIA`, `OPCAO_OPEN_INTEREST_MIN`)
-
-## Formato do alerta
-
-```
-PETR4 — OPORTUNIDADE CALL
-Preço PETR4: R$ 56,54
-Gatilho: rompeu máxima de 20 períodos com volume 1,8× a média.
-Tendência: alta | momentum positivo.
-IV Rank: 35% | IV Percentile: 32% (opção barata)
-
-Opção sugerida: PETRJ58 (call, strike 58,00, vencimento 04/11/2026)
-Delta estimado: ~0,45
-Preço da opção: R$ 1,10
-Entrada: até R$ 1,20
-Stop: abaixo de R$ 0,85
-Alvo 1: R$ 1,60
-Alvo 2: R$ 2,00
-Risco/Retorno: ~1:2,5
-
-Profit opção: https://profitchart.com.br/chart?ticker=PETRJ58&timeframe=5m
-```
-
-## Licença
-
-MIT
+## Limitações conhecidas (leia antes de confiar nos alertas)
+- **Não testado contra a API real.** Endpoints e campos foram implementados conforme a documentação da brapi; rode `eod` e `intraday` com `DRY_RUN=true` e confira antes de operar. Limites do plano Pro (requisições/min, profundidade do intraday) precisam ser verificados.
+- **IV Rank/Percentile são calculados aqui** (a brapi não documenta esses campos), sobre a IV ATM do vencimento mais próximo de 40 DTE. A troca de vencimento causa pequenos saltos na série.
+- **Bid/ask e prêmio vêm do pregão anterior** (dados de opções EOD). A mensagem avisa; confirme o book no Profit antes de decidir.
+- Universo é lista fixa (`config.py` / `UNIVERSE`); universo dinâmico fica para depois.
+- Feriados: sem candles do dia, o ciclo é ignorado.
+- Sem backtest ainda; os limiares são pontos de partida, não validados.
+- Link do Profit: usa `PROFIT_LINK_TEMPLATE` (padrão herdado da v2, `profitchart.com.br/chart?ticker=...`). A Nelogica não documenta esse formato; confirme se abre no iPhone. O código da opção sai também em toque-para-copiar.

@@ -1,161 +1,91 @@
-"""Robô···Trade — persistencia em SQLite."""
+"""Persistencia SQLite."""
+import sqlite3, json, os
+from contextlib import contextmanager
+import config
 
-from __future__ import annotations
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS iv_history(ticker TEXT, date TEXT, iv REAL, expiration TEXT, PRIMARY KEY(ticker,date));
+CREATE TABLE IF NOT EXISTS watchlist(date TEXT, ticker TEXT, iv REAL, iv_rank REAL, iv_pct REAL, PRIMARY KEY(date,ticker));
+CREATE TABLE IF NOT EXISTS iv_status(date TEXT, ticker TEXT, iv REAL, iv_rank REAL, iv_pct REAL, approved INTEGER, note TEXT, PRIMARY KEY(date,ticker));
+CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, ticker TEXT, direction TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS runs(job TEXT, date TEXT, PRIMARY KEY(job,date));
+CREATE TABLE IF NOT EXISTS iv_tried(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
+CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
+"""
 
-import json
-import sqlite3
-from dataclasses import asdict
-from datetime import datetime
-from pathlib import Path
-from typing import Any
+@contextmanager
+def conn():
+    d = os.path.dirname(config.DB_PATH)
+    if d: os.makedirs(d, exist_ok=True)
+    c = sqlite3.connect(config.DB_PATH)
+    c.row_factory = sqlite3.Row
+    c.executescript(SCHEMA)
+    try:
+        yield c
+        c.commit()
+    finally:
+        c.close()
 
-from analyzer import Analysis
-from config import Config
-from iv_filter import IVResult
-from screener import Candidate
+def save_iv(ticker, date, iv, expiration):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO iv_history VALUES(?,?,?,?)", (ticker, date, iv, expiration))
 
+def iv_series(ticker, window):
+    with conn() as c:
+        rows = c.execute("SELECT iv FROM iv_history WHERE ticker=? ORDER BY date DESC LIMIT ?", (ticker, window)).fetchall()
+    return [r["iv"] for r in rows][::-1]
 
-def init_database(db_path: str) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS candidates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS analyses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS iv_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                iv_rank REAL,
-                iv_percentile REAL,
-                approved INTEGER NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS setups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                analysis_payload TEXT NOT NULL,
-                iv_payload TEXT NOT NULL,
-                messages_sent INTEGER NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sent_at TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                message_type TEXT NOT NULL,
-                content TEXT NOT NULL
-            )
-            """
-        )
+def has_iv(ticker, date):
+    with conn() as c:
+        return c.execute("SELECT 1 FROM iv_history WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None
 
+def save_iv_status(date, ticker, iv, rank, pct, approved, note=""):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO iv_status VALUES(?,?,?,?,?,?,?)", (date, ticker, iv, rank, pct, int(approved), note))
+        if approved:
+            c.execute("INSERT OR REPLACE INTO watchlist VALUES(?,?,?,?,?)", (date, ticker, iv, rank, pct))
 
-def save_candidate(db_path: str, candidate: Candidate, status: str = "triado") -> None:
-    created_at = datetime.now().isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO candidates (created_at, ticker, payload, status)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                created_at,
-                candidate.ticker,
-                json.dumps(asdict(candidate), ensure_ascii=False),
-                status,
-            ),
-        )
+def latest_watchlist():
+    with conn() as c:
+        r = c.execute("SELECT MAX(date) d FROM watchlist").fetchone()
+        if not r or not r["d"]: return None, []
+        rows = c.execute("SELECT * FROM watchlist WHERE date=?", (r["d"],)).fetchall()
+    return r["d"], [dict(x) for x in rows]
 
+def latest_status(date):
+    with conn() as c:
+        return [dict(x) for x in c.execute("SELECT * FROM iv_status WHERE date=? ORDER BY iv_rank", (date,)).fetchall()]
 
-def save_analysis(db_path: str, analysis: Analysis) -> None:
-    created_at = datetime.now().isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO analyses (created_at, ticker, payload)
-            VALUES (?, ?, ?)
-            """,
-            (
-                created_at,
-                analysis.ticker,
-                json.dumps(asdict(analysis), ensure_ascii=False),
-            ),
-        )
+def log_signal(ts, ticker, direction, payload):
+    with conn() as c:
+        c.execute("INSERT INTO signals(ts,ticker,direction,payload) VALUES(?,?,?,?)", (ts, ticker, direction, json.dumps(payload, default=str)))
 
+def already_alerted(date, ticker, direction):
+    with conn() as c:
+        return c.execute("SELECT 1 FROM alerts WHERE date=? AND ticker=? AND direction=?", (date, ticker, direction)).fetchone() is not None
 
-def save_iv_result(db_path: str, iv: IVResult) -> None:
-    created_at = datetime.now().isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO iv_results (created_at, ticker, iv_rank, iv_percentile, approved)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                created_at,
-                iv.ticker,
-                iv.iv_rank,
-                iv.iv_percentile,
-                1 if iv.approved else 0,
-            ),
-        )
+def save_alert(date, ticker, direction, ts, payload):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO alerts VALUES(?,?,?,?,?)", (date, ticker, direction, ts, json.dumps(payload, default=str)))
 
+def min_history(tickers):
+    """Menor quantidade de pregoes de IV salvos entre os tickers."""
+    with conn() as c:
+        counts = {r["ticker"]: r["n"] for r in c.execute("SELECT ticker, COUNT(*) n FROM iv_history GROUP BY ticker")}
+    return min((counts.get(t, 0) for t in tickers), default=0)
 
-def save_setup(db_path: str, analysis: Analysis, iv: IVResult, messages_sent: bool) -> None:
-    created_at = datetime.now().isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO setups (created_at, ticker, analysis_payload, iv_payload, messages_sent)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                created_at,
-                analysis.ticker,
-                json.dumps(asdict(analysis), ensure_ascii=False),
-                json.dumps(asdict(iv), ensure_ascii=False),
-                1 if messages_sent else 0,
-            ),
-        )
+def mark_done(job, date):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO runs VALUES(?,?)", (job, date))
 
+def done(job, date):
+    with conn() as c:
+        return c.execute("SELECT 1 FROM runs WHERE job=? AND date=?", (job, date)).fetchone() is not None
 
-def save_message_log(
-    db_path: str,
-    ticker: str,
-    message_type: str,
-    content: str,
-) -> None:
-    sent_at = datetime.now().isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO messages (sent_at, ticker, message_type, content)
-            VALUES (?, ?, ?, ?)
-            """,
-            (sent_at, ticker, message_type, content),
-        )
+def mark_tried(ticker, date):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO iv_tried VALUES(?,?)", (ticker, date))
+
+def was_tried(ticker, date):
+    with conn() as c:
+        return c.execute("SELECT 1 FROM iv_tried WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None

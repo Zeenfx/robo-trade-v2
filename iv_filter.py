@@ -1,120 +1,61 @@
-"""
-IV Filter - Filtro de volatilidade implícita
-"""
+"""IV ATM por ativo, IV Rank e IV Percentile (calculados sobre historico proprio)."""
 import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
-import config
-from data_fetcher import get_client
+from datetime import date as dt_date, datetime
+import config, database
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger("iv")
 
+def iv_rank(series, current):
+    lo, hi = min(series), max(series)
+    return 0.0 if hi == lo else (current - lo) / (hi - lo) * 100
 
-class IVFilter:
-    """Filtro de IV Rank e IV Percentile"""
-    
-    def __init__(self):
-        self.client = get_client()
-    
-    async def calculate_iv_rank(self, iv_history: List[float], current_iv: float) -> Optional[float]:
-        """Calcula IV Rank"""
-        if not iv_history or len(iv_history) < config.IV_WINDOW:
-            return None
-        
-        iv_min = min(iv_history)
-        iv_max = max(iv_history)
-        
-        if iv_max == iv_min:
-            return 50.0
-        
-        iv_rank = (current_iv - iv_min) / (iv_max - iv_min) * 100
-        return iv_rank
-    
-    async def calculate_iv_percentile(self, iv_history: List[float], current_iv: float) -> Optional[float]:
-        """Calcula IV Percentile"""
-        if not iv_history or len(iv_history) < config.IV_WINDOW:
-            return None
-        
-        count_below = sum(1 for iv in iv_history if iv < current_iv)
-        iv_percentile = count_below / len(iv_history) * 100
-        return iv_percentile
-    
-    async def get_iv_history(self, symbol: str) -> Optional[List[float]]:
-        """Busca histórico de IV (últimos 252 pregões)"""
-        try:
-            # Busca cadeia de opções mais recente
-            expirations = await self.client.get_options_expirations(symbol)
-            if not expirations:
-                return None
-            
-            # Pega vencimento mais próximo (máximo 60 dias)
-            today = datetime.now().date()
-            valid_expirations = []
-            for exp in expirations:
-                exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
-                dte = (exp_date - today).days
-                if config.MIN_DTE <= dte <= config.MAX_DTE:
-                    valid_expirations.append(exp)
-            
-            if not valid_expirations:
-                return None
-            
-            # Pega o primeiro vencimento válido
-            expiration = valid_expirations[0]
-            
-            # Busca analytics (IV)
-            analytics = await self.client.get_options_analytics(symbol, expiration)
-            if not analytics:
-                return None
-            
-            # Extrai IV histórica (simplificado - futuramente buscar histórico completo)
-            # Por enquanto, usa IV atual como referência
-            current_iv = float(analytics.get("iv") or 0)
-            
-            # Simula histórico (futuramente: buscar histórico real de IV)
-            iv_history = [current_iv * (0.8 + 0.4 * (i / config.IV_WINDOW)) for i in range(config.IV_WINDOW)]
-            
-            return iv_history
-            
-        except Exception as e:
-            logger.error(f"Erro ao buscar IV histórico {symbol}: {e}")
-            return None
-    
-    async def check_iv(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Verifica IV Rank e IV Percentile"""
-        try:
-            # Busca histórico de IV
-            iv_history = await self.get_iv_history(symbol)
-            if not iv_history:
-                return None
-            
-            current_iv = iv_history[-1] if iv_history else 0
-            
-            # Calcula métricas
-            iv_rank = await self.calculate_iv_rank(iv_history, current_iv)
-            iv_percentile = await self.calculate_iv_percentile(iv_history, current_iv)
-            
-            if iv_rank is None or iv_percentile is None:
-                return None
-            
-            # Verifica se é favorável
-            iv_favorable = iv_rank <= config.MAX_IV_RANK and iv_percentile <= config.MAX_IV_PERCENTILE
-            
-            result = {
-                "symbol": symbol,
-                "iv_current": current_iv,
-                "iv_rank": iv_rank,
-                "iv_percentile": iv_percentile,
-                "iv_favorable": iv_favorable,
-            }
-            
-            if iv_favorable:
-                logger.info(f"{symbol}: IV favorável (Rank={iv_rank:.1f}%, Percentile={iv_percentile:.1f}%)")
-            else:
-                logger.debug(f"{symbol}: IV não favorável (Rank={iv_rank:.1f}%, Percentile={iv_percentile:.1f}%)")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Erro no filtro IV {symbol}: {e}")
-            return None
+def iv_percentile(series, current):
+    return sum(1 for x in series if x < current) / len(series) * 100
+
+def iv_favoravel(rank, pct):
+    return rank is not None and pct is not None and rank <= config.IV_RANK_MAX and pct <= config.IV_PERCENTILE_MAX
+
+def pick_expiration(expirations, today, target=None, lo=None, hi=None):
+    """Vencimento com DTE mais proximo do alvo, dentro de [lo, hi]."""
+    target, lo, hi = target or config.IV_TARGET_DTE, lo or config.IV_MIN_DTE, hi or config.IV_MAX_DTE
+    best = None
+    for e in expirations:
+        dte = (datetime.strptime(e, "%Y-%m-%d").date() - today).days
+        if lo <= dte <= hi and (best is None or abs(dte - target) < abs(best[1] - target)):
+            best = (e, dte)
+    return best
+
+def atm_iv(analytics):
+    """Media da IV da call e da put mais proximas do dinheiro. None se indisponivel."""
+    rows = [a for a in analytics if a.get("impliedVolatility") and a.get("underlyingPrice") and a.get("strike")]
+    if not rows: return None
+    spot = rows[0]["underlyingPrice"]
+    out = []
+    for side in ("call", "put"):
+        s = [a for a in rows if a["side"] == side]
+        if s:
+            out.append(min(s, key=lambda a: abs(a["strike"] - spot))["impliedVolatility"])
+    return sum(out) / len(out) if out else None
+
+def evaluate(ticker, window=None):
+    """Retorna (iv, rank, pct, approved, note) com base no historico salvo."""
+    series = database.iv_series(ticker, window or config.IV_WINDOW)
+    if len(series) < config.IV_MIN_HISTORY:
+        return (series[-1] if series else None), None, None, False, f"historico insuficiente ({len(series)}/{config.IV_MIN_HISTORY})"
+    cur = series[-1]
+    r, p = iv_rank(series, cur), iv_percentile(series, cur)
+    return cur, r, p, iv_favoravel(r, p), ""
+
+def collect_iv(api, ticker, trade_date=None, today=None):
+    """Le analytics do pregao (trade_date=None -> ultimo disponivel) e salva a IV ATM."""
+    today = today or (datetime.strptime(trade_date, "%Y-%m-%d").date() if trade_date else dt_date.today())
+    exps = api.expirations(ticker, include_expired=trade_date is not None)
+    pick = pick_expiration(exps, today)
+    if not pick:
+        return None
+    d, rows = api.analytics(ticker, pick[0], date=trade_date)
+    iv = atm_iv(rows)
+    if iv is None or not d:
+        return None
+    database.save_iv(ticker, d, iv, pick[0])
+    return d, iv

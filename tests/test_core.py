@@ -1,0 +1,100 @@
+import os, sys, tempfile
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import config
+config.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+import database, iv_filter, analyzer, options_selector, messenger
+
+TZ = ZoneInfo("America/Sao_Paulo")
+
+def test_iv_rank_percentile():
+    s = list(range(10, 110))  # 100 valores 10..109
+    assert round(iv_filter.iv_rank(s, 17.39 + 0), 1) == round((17.39 - 10) / 99 * 100, 1)
+    assert iv_filter.iv_percentile(s, 40) == 30.0
+    assert iv_filter.iv_favoravel(17.39, 14.68)
+    assert not iv_filter.iv_favoravel(14.11, 65.48)   # ENEV3 do Raio-X
+    assert not iv_filter.iv_favoravel(None, 10)
+
+def test_evaluate_needs_history_then_approves():
+    for i in range(80):
+        database.save_iv("TEST3", f"2026-01-{i:03d}", 0.5 - i * 0.002 + (0.3 if i < 40 else 0), "x")
+    iv, r, p, ok, note = iv_filter.evaluate("TEST3")
+    assert r is not None and ok
+    database.save_iv("SHORT3", "2026-01-01", 0.3, "x")
+    assert iv_filter.evaluate("SHORT3")[3] is False
+
+def test_pick_expiration():
+    e = iv_filter.pick_expiration(["2026-10-16", "2026-11-20", "2026-12-18"], date(2026, 10, 8))
+    assert e[0] == "2026-11-20"
+
+def _daily(n=70, base=10.0):
+    out = []
+    t0 = datetime(2026, 7, 1, 12, tzinfo=TZ).timestamp()
+    for i in range(n):
+        out.append(dict(date=t0 + i * 86400, open=base, high=base + 0.3, low=base - 0.3, close=base, volume=1_000_000))
+    return out
+
+def _m15(day, closes, vol):
+    t = datetime(2026, 10, 8, 10, 0, tzinfo=TZ).timestamp()
+    return [dict(date=t + i * 900, open=c, high=c, low=c, close=c, volume=vol) for i, c in enumerate(closes)]
+
+def test_breakout_long_and_stop_target():
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = _daily()
+    daily = [d for d in daily if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    m15 = _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000)
+    s = analyzer.analyze("TEST3", daily, m15, now)
+    assert s and s.direction == "long" and s.stop < s.level < s.price < s.target
+    assert abs((s.target - s.price) - 2 * (s.price - s.stop)) < 1e-9
+
+def test_no_signal_low_volume_or_inside_range():
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    assert analyzer.analyze("T", daily, _m15(now, [10.4, 10.45, 10.5, 10.5], 1_000), now) is None
+    assert analyzer.analyze("T", daily, _m15(now, [10.0, 10.1, 10.0, 10.1], 600_000), now) is None
+
+class FakeApi:
+    def expirations(self, u, include_expired=False): return ["2026-11-20"]
+    def analytics(self, u, e, date=None, side=None):
+        return "2026-10-07", [dict(symbol="AAA", strike=10, delta=0.52, impliedVolatility=0.3, allocationRoundLot=100),
+                              dict(symbol="BBB", strike=11, delta=0.30, impliedVolatility=0.3, allocationRoundLot=100),
+                              dict(symbol="CCC", strike=10.5, delta=0.45, impliedVolatility=0.3, allocationRoundLot=100)]
+    def chain(self, u, e, side=None):
+        return "2026-10-07", [dict(symbol="AAA", bid=0.50, ask=0.52, openInterest=1000, volume=200),
+                              dict(symbol="BBB", bid=0.1, ask=0.11, openInterest=1000, volume=200),
+                              dict(symbol="CCC", bid=0.2, ask=0.4, openInterest=1000, volume=200)]  # spread alto
+
+def test_option_selection_liquidity():
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    opt, err = options_selector.select(FakeApi(), s, date(2026, 10, 8))
+    assert opt and opt["symbol"] == "AAA"
+    txt = messenger.full_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
+    assert "Invalidação" in txt and "Manejo" in txt and "<code>AAA</code>" in txt
+
+def test_tick_schedule(monkeypatch):
+    import main
+    calls = []
+    monkeypatch.setattr(main, "job_eod", lambda: calls.append("eod"))
+    monkeypatch.setattr(main, "job_intraday", lambda: calls.append("intra"))
+    monkeypatch.setattr(main, "job_pre", lambda: calls.append("pre"))
+    monkeypatch.setattr(database, "min_history", lambda t: 999)
+    marks = set()
+    monkeypatch.setattr(database, "done", lambda j, d: (j, d) in marks)
+    monkeypatch.setattr(database, "mark_done", lambda j, d: marks.add((j, d)))
+    def run(h, m, day=8):
+        calls.clear()
+        monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, day, h, m, 30, tzinfo=TZ))
+        main.job_tick(); return list(calls)
+    assert run(8, 30) == ["eod"]            # quinta 08/10
+    assert run(8, 35) == []                 # eod ja feito hoje
+    assert run(9, 45) == ["intra"]          # abertura: a cada 5 min
+    assert run(10, 5) == ["intra"]
+    assert run(10, 15) == ["intra"]
+    assert run(10, 20) == []                # depois das 10:15: so de 15 em 15
+    assert run(10, 30) == ["intra"]
+    assert run(17, 45) == ["intra"]
+    assert run(17, 50) == []
+    assert run(10, 30, day=10) == []        # sabado
