@@ -1,77 +1,156 @@
-import os
-import logging
-import asyncio
-import httpx
-from brapi_client import get_quote, get_option_chain
+"""Orquestracao (EOD as 08:30; no Railway a 1a subida faz o backfill sozinha). Uso: python main.py tick (cron) | serve (sempre ligado) | pre | intraday | eod | backfill [dias] | status | telegram-test"""
+import sys, logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import config, database, messenger, screener, analyzer, options_selector, iv_filter
+from data_fetcher import Brapi, BrapiError
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("main")
+TZ = ZoneInfo(config.TZ)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-ATIVOS = ["PETR4", "VALE3", "ITUB4", "MGLU3"]
+def now(): return datetime.now(TZ)
 
+def job_eod():
+    """Apos ~21:30: coleta IV ATM do pregao, calcula Rank/Percentile, monta a watchlist de amanha."""
+    api, ok = Brapi(), 0
+    trade_date = None
+    for t in config.UNIVERSE:
+        try:
+            r = iv_filter.collect_iv(api, t)
+            if not r: log.warning("%s: sem IV", t); continue
+            trade_date = r[0]
+            iv, rank, pct, approved, note = iv_filter.evaluate(t)
+            database.save_iv_status(trade_date, t, iv, rank, pct, approved, note)
+            ok += 1
+        except BrapiError as e:
+            log.error("%s: %s", t, e)
+    log.info("EOD concluido: %d/%d ativos; data %s", ok, len(config.UNIVERSE), trade_date)
 
-def analyze_trend(quote):
-    price = quote.price
-    if not price:
-        return None, 0.0
-    change_pct = float(quote._data.get("changePercent") or 0.0)
-    if change_pct >= 1.5:
-        return "CALL", change_pct
-    if change_pct <= -1.5:
-        return "PUT", change_pct
-    return None, change_pct
+def job_pre():
+    """Pre-abertura: avisa a watchlist do dia (uma mensagem curta)."""
+    d, wl = screener.watchlist()
+    if not wl:
+        log.info("Watchlist vazia"); return
+    lines = [f"Radar de Opções — observação de hoje (IV de {d})"]
+    for r in sorted(wl.values(), key=lambda r: r["iv_rank"]):
+        lines.append(f"• {r['ticker']}: IV {r['iv']*100:.1f}% | Rank {r['iv_rank']:.0f} | Pct {r['iv_pct']:.0f}")
+    lines.append("Alerta só sai se houver rompimento confirmado.")
+    messenger.send("\n".join(lines))
 
+def job_intraday():
+    d, wl = screener.watchlist()
+    if not wl: return
+    api, t0 = Brapi(), now()
+    sigs = []
+    for t in wl:
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = api.history(t, "5d", "15m")
+            if not m15 or datetime.fromtimestamp(m15[-1]["date"], TZ).date() != t0.date():
+                continue  # sem pregao hoje (feriado) ou sem dados
+            s = analyzer.analyze(t, daily, m15, t0)
+            if s and not database.already_alerted(str(t0.date()), t, s.direction):
+                sigs.append(s)
+        except BrapiError as e:
+            log.error("%s: %s", t, e)
+    for s in screener.rank_signals(sigs):
+        iv = wl[s.ticker]
+        database.log_signal(t0.isoformat(), s.ticker, s.direction, s.dict())
+        try:
+            opt, err = options_selector.select(api, s, t0.date())
+        except BrapiError as e:
+            opt, err = None, str(e)
+        messenger.send(messenger.short_msg(s, iv))
+        messenger.send(messenger.full_msg(s, iv, opt, err))
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
+    log.info("Intraday: %d na watchlist, %d sinais", len(wl), len(sigs))
 
-def select_option_for_buy(chain, signal_type):
-    options = chain.calls if signal_type == "CALL" else chain.puts
-    if not options:
-        return None
-    target_delta = 0.55 if signal_type == "CALL" else 0.45
-    valid = [opt for opt in options if float(opt.get("price") or 0) > 0]
-    return min(valid, key=lambda opt: abs(abs(float(opt.get("delta") or 0)) - target_delta)) if valid else None
+def job_backfill(days=365, budget=None):
+    """Reconstroi IV historica (1 chamada de analytics por ativo/dia). Retomavel.
+    budget = segundos maximos por execucao (usado no modo cron)."""
+    import time
+    api, t0 = Brapi(), time.time()
+    start = now().date() - timedelta(days=days)
+    for t in config.UNIVERSE:
+        d = start
+        while d < now().date():
+            if budget and time.time() - t0 > budget:
+                log.info("Backfill: tempo da execucao esgotado; continua na proxima"); return False
+            if d.weekday() < 5 and not database.has_iv(t, str(d)) and not database.was_tried(t, str(d)):
+                try:
+                    if not iv_filter.collect_iv(api, t, trade_date=str(d)):
+                        database.mark_tried(t, str(d))
+                except BrapiError as e:
+                    log.debug("%s %s: %s", t, d, e)
+                    database.mark_tried(t, str(d))
+            d += timedelta(days=1)
+        log.info("Backfill %s concluido", t)
+    return True
 
-
-def format_message(ativo, signal, option, underlying_price, change_pct):
-    return f"""{signal} {ativo}
-
-Opção: {option['symbol']}
-Strike: R$ {float(option['strike']):.2f}
-Prêmio: R$ {float(option['price']):.2f}
-Delta: {float(option.get('delta') or 0):.2f}
-Ativo: R$ {underlying_price:.2f}
-
-[ESTUDO - NÃO É RECOMENDAÇÃO]"""
-
-
-async def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram sem token/chat")
+def job_bootstrap():
+    """Na 1a subida (ou banco vazio): reconstroi o historico de IV e calcula a watchlist."""
+    if database.min_history(config.UNIVERSE) >= config.IV_MIN_HISTORY:
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=15)
+    log.info("Historico de IV insuficiente: iniciando backfill (pode levar um bom tempo)")
+    job_backfill(365)
+    job_eod()
+    messenger.send("Radar de Opções: histórico de IV carregado; robô ativo.")
 
+def job_telegram_test():
+    messenger.send("Radar de Opções: teste de conexão com o Telegram OK.")
 
-async def main():
-    logger.info("Iniciando")
-    for ativo in ATIVOS:
-        quote = get_quote(ativo)
-        if not quote.price:
-            continue
-        signal, change_pct = analyze_trend(quote)
-        if not signal:
-            continue
-        chain = get_option_chain(ativo)
-        option = select_option_for_buy(chain, signal)
-        if not option:
-            continue
-        message = format_message(ativo, signal, option, float(quote.price), change_pct)
-        await send_telegram(message)
-        logger.info(f"Enviado {ativo}")
-    logger.info("Fim")
+def job_tick():
+    """Modo CRON (Railway): rodar a cada 5 min, seg-sex, '*/5 11-20 * * 1-5' (UTC).
+    Decide pelo relogio de Brasilia o que executar nesta passada."""
+    if config.ON_RAILWAY and not config.DB_PERSISTENT:
+        log.error("Sem Volume no Railway: o banco seria apagado a cada execucao. Anexe um Volume ao servico.")
+        sys.exit(1)
+    t = now()
+    if t.weekday() > 4:
+        return
+    today = str(t.date())
+    slot = t.hour * 60 + (t.minute // 5) * 5            # minutos desde 00:00, em passos de 5
+    if database.min_history(config.UNIVERSE) < config.IV_MIN_HISTORY:
+        if job_backfill(365, budget=240):
+            job_eod()
+        return
+    if 8 * 60 + 30 <= slot < 10 * 60 and not database.done("eod", today):
+        job_eod()
+        database.mark_done("eod", today)
+    if config.WATCHLIST_MSG and 9 * 60 + 30 <= slot < 10 * 60 and not database.done("pre", today):
+        job_pre()
+        database.mark_done("pre", today)
+    if (9 * 60 + 45 <= slot <= 10 * 60 + 10) or (10 * 60 + 15 <= slot <= 17 * 60 + 45 and slot % 15 == 0):
+        job_intraday()
 
+def job_status():
+    d, wl = screener.watchlist()
+    print("Watchlist:", d, list(wl))
+    if d:
+        for r in database.latest_status(d):
+            print(r)
+
+def serve():
+    from apscheduler.schedulers.blocking import BlockingScheduler
+    s = BlockingScheduler(timezone=config.TZ)
+    wk = "mon-fri"
+    # EOD roda de manha (08:30): os dados do pregao anterior da brapi ja estao disponiveis desde ~21h
+    s.add_job(job_eod, "cron", day_of_week=wk, hour=8, minute=30, id="eod", misfire_grace_time=3600, coalesce=True)
+    if config.WATCHLIST_MSG:
+        s.add_job(job_pre, "cron", day_of_week=wk, hour=9, minute=30, id="pre", misfire_grace_time=1800, coalesce=True)
+    s.add_job(job_intraday, "cron", day_of_week=wk, hour=9, minute="45-55/5", id="open5a")
+    s.add_job(job_intraday, "cron", day_of_week=wk, hour=10, minute="0,5,10", id="open5b")
+    s.add_job(job_intraday, "cron", day_of_week=wk, hour="10-17", minute="15,30,45", id="m15a")
+    s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
+    s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    log.info("Agendador iniciado (%s)", config.TZ)
+    s.start()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    asyncio.run(main())
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+            "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
+    if cmd not in jobs:
+        sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")
+    jobs[cmd]()

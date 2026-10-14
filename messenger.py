@@ -1,119 +1,48 @@
-"""Envio de mensagens para o Telegram com formato de opções."""
-import logging
-from datetime import datetime
-from typing import Optional
+"""Telegram."""
+import html, logging, requests
+import config
 
-import requests
+log = logging.getLogger("tg")
 
-from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
-from analyzer import ResultadoAnalise
-from screener import OpcaoSelecionada
-
-logger = logging.getLogger(__name__)
-
-
-def formatar_mensagem(
-    ativo: str,
-    analise: ResultadoAnalise,
-    iv_rank: float,
-    iv_percentile: float,
-    opcao: Optional[OpcaoSelecionada] = None,
-) -> str:
-    """
-    Formata mensagem para Telegram.
-    
-    Formato CALL:
-    PETR4 — OPORTUNIDADE CALL
-    Preço PETR4: R$ 56,54
-    Gatilho: rompeu máxima de 20 períodos com volume 1,8× a média.
-    Tendência: preço > EMA20 > EMA50 | MACD subindo.
-    IV Rank: 35% | IV Percentile: 32% (opção barata)
-    
-    Opção sugerida: PETRJ58 (call, strike 58, vencimento 16/10/2026)
-    Delta estimado: ~0,45
-    Preço da opção: R$ 1,10
-    Entrada: até R$ 1,20
-    Stop: abaixo de R$ 0,85
-    Alvo 1: R$ 1,60
-    Alvo 2: R$ 2,00
-    Risco/Retorno: ~1:2,5
-    
-    Profit opção: https://profitchart.com.br/chart?ticker=PETRJ58&timeframe=5m
-    """
-    sinal = analise.sinal.value
-    
-    # Cabeçalho
-    if sinal == "CALL":
-        titulo = f"{ativo} — OPORTUNIDADE CALL"
-    elif sinal == "PUT":
-        titulo = f"{ativo} — OPORTUNIDADE PUT"
-    else:
-        titulo = f"{ativo} — AGUARDAR"
-    
-    linhas = [titulo, ""]
-    
-    # Preço e gatilho
-    linhas.append(f"Preço {ativo}: R$ {analise.preco_atual:.2f}")
-    linhas.append(f"Gatilho: {analise.motivo}.")
-    linhas.append(f"Tendência: {analise.tendencia} | momentum {analise.momentum}.")
-    linhas.append(f"IV Rank: {iv_rank:.0f}% | IV Percentile: {iv_percentile:.0f}% {'(opção barata)' if iv_rank <= 40 and iv_percentile <= 40 else ''}")
-    
-    # Opção (se houver)
-    if opcao and sinal in ["CALL", "PUT"]:
-        linhas.append("")
-        linhas.append(f"Opção sugerida: {opcao.ticker} ({opcao.tipo}, strike {opcao.strike:.2f}, vencimento {opcao.vencimento.strftime('%d/%m/%Y')})")
-        linhas.append(f"Delta estimado: ~{opcao.delta:.2f}")
-        linhas.append(f"Preço da opção: R$ {opcao.preco:.2f}")
-        
-        # Calcular entrada, stop, alvos
-        entrada = opcao.preco * 1.10  # até 10% acima
-        stop = opcao.preco * 0.75     # 25% abaixo
-        alvo1 = opcao.preco * 1.45    # 45% acima
-        alvo2 = opcao.preco * 1.80    # 80% acima
-        
-        linhas.append(f"Entrada: até R$ {entrada:.2f}")
-        linhas.append(f"Stop: abaixo de R$ {stop:.2f}")
-        linhas.append(f"Alvo 1: R$ {alvo1:.2f}")
-        linhas.append(f"Alvo 2: R$ {alvo2:.2f}")
-        
-        risco = opcao.preco - stop
-        retorno = alvo1 - opcao.preco
-        rr = retorno / risco if risco else 0
-        linhas.append(f"Risco/Retorno: ~1:{rr:.1f}")
-        
-        # Link do Profit da OPÇÃO (não do ativo)
-        linhas.append("")
-        timeframe = "5m"
-        link_profit = f"https://profitchart.com.br/chart?ticker={opcao.ticker}&timeframe={timeframe}"
-        linhas.append(f"Profit opção: {link_profit}")
-    else:
-        # Sem opção: link do ativo mesmo assim
-        linhas.append("")
-        timeframe = "5m"
-        link_profit = f"https://profitchart.com.br/chart?ticker={ativo}&timeframe={timeframe}"
-        linhas.append(f"Profit ativo: {link_profit}")
-    
-    return "\n".join(linhas)
-
-
-def enviar_telegram(mensagem: str) -> bool:
-    """Envia mensagem para o Telegram."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID não configurados")
+def send(text):
+    if config.DRY_RUN or not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        log.info("[DRY_RUN] %s", text)
         return False
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": mensagem,
-        "parse_mode": "HTML",
-    }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        logger.info("Mensagem enviada ao Telegram")
-        return True
-    except Exception as e:
-        logger.error(f"Erro ao enviar mensagem ao Telegram: {e}")
+    r = requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                      json={"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
+    if r.status_code != 200:
+        log.error("Telegram %s %s", r.status_code, r.text[:200])
         return False
+    return True
+
+def fmt(x, n=2): return f"{x:,.{n}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def short_msg(sig, iv):
+    return (f"<b>{sig.ticker}</b> — análise prioritária\nCenário: {sig.direction.upper()}\n"
+            f"Timeframe principal: M15 (confirmação em D1)\n"
+            f"Status: IV aprovado (Rank {fmt(iv['iv_rank'],1)}%, Percentile {fmt(iv['iv_pct'],1)}%)")
+
+def full_msg(sig, iv, opt, opt_err):
+    lines = [f"<b>{sig.ticker}</b> — análise completa (toque para copiar: <code>{sig.ticker}</code>)",
+        f"Tendência D1: {sig.trend_d1}",
+        f"Estrutura H1/M15: {sig.h1_note}",
+        f"Gatilho M15: {sig.trigger_m15}",
+        f"Região de interesse: rompimento de R$ {fmt(sig.level)} (preço atual R$ {fmt(sig.price)})",
+        f"Invalidação (stop no ativo): R$ {fmt(sig.stop)}",
+        f"Alvo técnico: R$ {fmt(sig.target)} (risco/retorno 1:{config.RR_TARGET:g})",
+        f"Espaço técnico: {sig.space} | ATR D1: R$ {fmt(sig.atr)} | Ritmo de volume: {fmt(sig.vr,1)}x",
+        f"IV atual (ATM): {fmt(iv['iv']*100,1)}% | IV Rank: {fmt(iv['iv_rank'],1)}% | IV Percentile: {fmt(iv['iv_pct'],1)}%"]
+    if opt:
+        lines += [f"Opção candidata: <code>{opt['symbol']}</code> — toque para copiar e colar na busca do Profit ({opt['side'].upper()} strike {fmt(opt['strike'])}, venc. {opt['expiration']}, {opt['dte']} DTE)",
+            f"Delta {fmt(opt['delta'])} | IV {fmt((opt['iv'] or 0)*100,1)}% | Bid {fmt(opt['bid'])} / Ask {fmt(opt['ask'])} | Spread {fmt(opt['spread_pct'],1)}%",
+            f"Liquidez: OI {opt['oi']} | volume {opt['volume']} (dados do pregão {opt['ref_date']}; confira o book ao vivo)",
+            f"Risco: prêmio pago, máx. R$ {fmt(opt['max_loss_per_lot'])} por lote de {opt['lot']}",
+            f"Manejo: sair se o ativo perder R$ {fmt(sig.stop)} ou se o prêmio cair {config.OPTION_STOP_LOSS_PCT}% (≈ R$ {fmt(opt['stop_premium'])}); realizar no alvo do ativo"]
+    else:
+        lines.append(f"Opção: nenhuma passou nos filtros ({html.escape(str(opt_err))}). Alerta apenas do ativo.")
+    tpl = config.PROFIT_LINK_TEMPLATE
+    if tpl and tpl.lower() != "off":
+        target = opt["symbol"] if opt else sig.ticker
+        lines.append(f"Profit {'opção' if opt else 'ativo'}: " + html.escape(tpl.format(ticker=target)))
+    lines.append("Apoio à decisão; não é ordem nem recomendação.")
+    return "\n".join(lines)
