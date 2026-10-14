@@ -3,7 +3,10 @@
 O serviço atual é um **cron** (roda e encerra). A versão nova mantém esse formato: a cada 5 min ela olha o relógio de Brasília e decide o que fazer (`python main.py tick`).
 
 ## 1. Subir o código novo
-Mescle a branch `atualizacao-v3` na `main` (GitHub → *Pull requests*). O Railway faz o deploy sozinho.
+No GitHub (repositório `robo-trade-v2`):
+1. *Add file → Upload files*: arraste **todo o conteúdo** da pasta do zip (inclusive a pasta `tests`). Marque *Create a new branch* (`atualizacao-v3`) se quiser revisar antes; os arquivos de mesmo nome são substituídos.
+2. Apague os 4 arquivos antigos que não existem mais: `brapi_client.py`, `telegram_client.py`, `health_check.py`, `test_telegram.py` (abra o arquivo → ícone de lixeira → *Commit*).
+3. Mescle na `main` (se usou branch). O Railway faz o deploy sozinho.
 
 ## 2. No Railway, serviço `robo-trade`
 1. **Settings → Cron Schedule:** troque para `*/5 11-20 * * 1-5` (UTC = 08:00–17:55 em Brasília, seg–sex).
