@@ -77,7 +77,7 @@ def test_option_selection_liquidity():
 def test_tick_schedule(monkeypatch):
     import main
     calls = []
-    monkeypatch.setattr(main, "job_eod", lambda: calls.append("eod"))
+    monkeypatch.setattr(main, "job_eod", lambda: calls.append("eod") or 17)
     monkeypatch.setattr(main, "job_intraday", lambda: calls.append("intra"))
     monkeypatch.setattr(main, "job_pre", lambda: calls.append("pre"))
     monkeypatch.setattr(database, "min_history", lambda t: 999)
@@ -98,3 +98,28 @@ def test_tick_schedule(monkeypatch):
     assert run(17, 45) == ["intra"]
     assert run(17, 50) == []
     assert run(10, 30, day=10) == []        # sabado
+
+def test_backfill_plan_error_not_marked(monkeypatch):
+    import main
+    from data_fetcher import BrapiPlanError
+    monkeypatch.setattr(main, "Brapi", lambda: object())
+    monkeypatch.setattr(config, "UNIVERSE", ["ZZZ3"])
+    monkeypatch.setattr(main.iv_filter, "collect_iv", lambda *a, **k: (_ for _ in ()).throw(BrapiPlanError("403", 403)))
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    assert main.job_backfill(10) is False        # interrompe
+    assert len(sent) == 1 and "recusou" in sent[0]
+    d = main.now().date()
+    import datetime as dt
+    for i in range(10):
+        assert not database.was_tried("ZZZ3", str(d - dt.timedelta(days=i)))   # nada marcado como tentado
+
+def test_no_false_active_message(monkeypatch):
+    import main
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    monkeypatch.setattr(database, "min_history", lambda t: 0)
+    monkeypatch.setattr(main, "job_backfill", lambda *a, **k: True)
+    monkeypatch.setattr(main, "job_eod", lambda: 1)           # 1 de 17 ok
+    main.job_bootstrap()
+    assert sent == []
