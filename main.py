@@ -1,5 +1,5 @@
 """Orquestracao (EOD as 08:30; no Railway a 1a subida faz o backfill sozinha). Uso: python main.py tick (cron) | serve (sempre ligado) | pre | intraday | eod | backfill [dias] | status | telegram-test"""
-import sys, logging
+import os, sys, logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import config, database, messenger, screener, analyzer, options_selector, iv_filter
@@ -151,6 +151,32 @@ def job_tick():
     if (9 * 60 + 45 <= slot <= 10 * 60 + 10) or (10 * 60 + 15 <= slot <= 17 * 60 + 45 and slot % 15 == 0):
         job_intraday()
 
+def job_debug_iv():
+    """Diagnostico: manda no Telegram os dados brutos usados no calculo da IV de um ativo (env DEBUG_IV=TICKER)."""
+    t = os.getenv("DEBUG_IV", "").strip().upper() or (sys.argv[2].upper() if len(sys.argv) > 2 else "")
+    if not t:
+        return
+    api = Brapi()
+    try:
+        exps = api.expirations(t)
+        pick = iv_filter.pick_expiration(exps, now().date())
+        lines = [f"Diagnostico IV {t}", f"Vencimentos: {', '.join(exps[:6])} | escolhido: {pick[0] if pick else 'nenhum'}"]
+        if pick:
+            d, rows = api.analytics(t, pick[0])
+            spot = next((r.get("underlyingPrice") for r in rows if r.get("underlyingPrice")), None)
+            lines.append(f"Data {d} | preco do ativo {spot} | {len(rows)} series")
+            if spot:
+                near = sorted([r for r in rows if r.get("strike")], key=lambda r: abs(r["strike"] - spot))[:8]
+                for r in near:
+                    lines.append(f"{r['symbol']} {r['side']} K={r['strike']} IV={r.get('impliedVolatility')} px={r.get('optionPrice')} OI={r.get('openInterest')} conf={r.get('confidence')} {r.get('nullReason') or ''}".strip())
+            lines.append(f"IV ATM usada pelo robo: {iv_filter.atm_iv(rows)}")
+        s = database.iv_series(t, config.IV_WINDOW)
+        if s:
+            lines.append(f"Historico salvo: n={len(s)} min={min(s):.3f} max={max(s):.3f} ultimos10={[round(x, 3) for x in s[-10:]]}")
+        messenger.send("\n".join(lines))
+    except BrapiError as e:
+        messenger.send(f"Diagnostico IV {t} falhou: {e}")
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -172,12 +198,14 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    if os.getenv("DEBUG_IV"):
+        s.add_job(job_debug_iv, "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
     log.info("Agendador iniciado (%s)", config.TZ)
     s.start()
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")

@@ -123,3 +123,18 @@ def test_no_false_active_message(monkeypatch):
     monkeypatch.setattr(main, "job_eod", lambda: 1)           # 1 de 17 ok
     main.job_bootstrap()
     assert sent == []
+
+def test_debug_iv_sends_summary(monkeypatch):
+    import main
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    monkeypatch.setenv("DEBUG_IV", "SUZB3")
+    class Api:
+        def expirations(self, u, include_expired=False): return ["2026-11-20"]
+        def analytics(self, u, e, date=None, side=None):
+            return "2026-10-16", [dict(symbol="SUZBK430", side="call", strike=43, impliedVolatility=0.27, optionPrice=1.2,
+                                        openInterest=900, underlyingPrice=42.8, confidence="medium")]
+    monkeypatch.setattr(main, "Brapi", lambda: Api())
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 20, 9, 0, tzinfo=TZ))
+    main.job_debug_iv()
+    assert len(sent) == 1 and "SUZBK430" in sent[0] and "IV ATM usada" in sent[0]
