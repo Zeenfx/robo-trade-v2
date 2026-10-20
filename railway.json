@@ -2,7 +2,7 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": { "builder": "NIXPACKS" },
   "deploy": {
-    "startCommand": "python main.py tick",
-    "restartPolicyType": "NEVER"
+    "startCommand": "python main.py serve",
+    "restartPolicyType": "ON_FAILURE"
   }
 }
