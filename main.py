@@ -158,30 +158,37 @@ def job_tick():
         job_intraday()
 
 def job_debug_iv():
-    """Diagnostico: manda no Telegram os dados brutos usados no calculo da IV de um ativo (env DEBUG_IV=TICKER)."""
-    t = os.getenv("DEBUG_IV", "").strip().upper() or (sys.argv[2].upper() if len(sys.argv) > 2 else "")
-    if not t:
+    """Diagnostico: manda no Telegram a IV/Rank/Percentile do robo (e os dados brutos) de 1 ou mais ativos.
+    env DEBUG_IV=SUZB3 ou DEBUG_IV=SUZB3,PETR4,VALE3 (tambem: python main.py debug-iv PETR4)."""
+    raw = os.getenv("DEBUG_IV", "").strip() or (sys.argv[2] if len(sys.argv) > 2 else "")
+    tickers = [x.strip().upper() for x in raw.split(",") if x.strip()]
+    if not tickers:
         return
     api = Brapi()
-    try:
-        exps = api.expirations(t)
-        pick = iv_filter.pick_expiration(exps, now().date())
-        lines = [f"Diagnostico IV {t}", f"Vencimentos: {', '.join(exps[:6])} | escolhido: {pick[0] if pick else 'nenhum'}"]
-        if pick:
-            d, rows = api.analytics(t, pick[0])
-            spot = next((r.get("underlyingPrice") for r in rows if r.get("underlyingPrice")), None)
-            lines.append(f"Data {d} | preco do ativo {spot} | {len(rows)} series")
-            if spot:
-                near = sorted([r for r in rows if r.get("strike")], key=lambda r: abs(r["strike"] - spot))[:8]
-                for r in near:
-                    lines.append(f"{r['symbol']} {r['side']} K={r['strike']} IV={r.get('impliedVolatility')} px={r.get('optionPrice')} OI={r.get('openInterest')} conf={r.get('confidence')} {r.get('nullReason') or ''}".strip())
-            lines.append(f"IV ATM usada pelo robo: {iv_filter.atm_iv(rows)}")
-        s = database.iv_series(t, config.IV_WINDOW)
-        if s:
-            lines.append(f"Historico salvo: n={len(s)} min={min(s):.3f} max={max(s):.3f} ultimos10={[round(x, 3) for x in s[-10:]]}")
-        messenger.send("\n".join(lines))
-    except BrapiError as e:
-        messenger.send(f"Diagnostico IV {t} falhou: {e}")
+    for t in tickers:
+        try:
+            exps = api.expirations(t)
+            pick = iv_filter.pick_expiration(exps, now().date())
+            lines = [f"Diagnostico IV {t}", f"Vencimento usado: {pick[0] + f' ({pick[1]} DTE)' if pick else 'nenhum'}"]
+            if pick:
+                d, rows = api.analytics(t, pick[0])
+                spot = next((r.get("underlyingPrice") for r in rows if r.get("underlyingPrice")), None)
+                lines.append(f"Dado de {d} | ativo R$ {spot} | {len(rows)} series")
+                if spot:
+                    near = sorted([r for r in rows if r.get("strike")], key=lambda r: abs(r["strike"] - spot))[:4]
+                    for r in near:
+                        lines.append(f"{r['symbol']} {r['side']} K={r['strike']} IV={r.get('impliedVolatility')} OI={r.get('openInterest')} conf={r.get('confidence')}")
+                v = iv_filter.atm_iv(rows)
+                lines.append(f"IV ATM do dia: {v * 100:.2f}%" if v else "IV ATM do dia: indisponivel")
+            iv, rank, pct, ok, note = iv_filter.evaluate(t)
+            if rank is None:
+                lines.append(f"Rank/Percentile do robo: {note or 'sem dados'}")
+            else:
+                lines.append(f"ROBO -> IV {iv * 100:.2f}% | Rank {rank:.1f} | Percentile {pct:.1f} | {'FAVORAVEL' if ok else 'nao favoravel'}")
+            lines.append(f"Pregoes de IV salvos: {database.count_iv(t)}")
+            messenger.send("\n".join(lines))
+        except BrapiError as e:
+            messenger.send(f"Diagnostico IV {t} falhou: {e}")
 
 def job_status():
     d, wl = screener.watchlist()
