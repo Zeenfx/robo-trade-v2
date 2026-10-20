@@ -137,7 +137,7 @@ def test_debug_iv_sends_summary(monkeypatch):
     monkeypatch.setattr(main, "Brapi", lambda: Api())
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 20, 9, 0, tzinfo=TZ))
     main.job_debug_iv()
-    assert len(sent) == 1 and "SUZBK430" in sent[0] and "IV ATM usada" in sent[0]
+    assert len(sent) == 1 and "SUZBK430" in sent[0] and "IV ATM do dia" in sent[0]
 
 def test_prefers_monthly_expiration():
     # 20/10/2026: semanal 27/11 (38 DTE) e mensal 19/11 (30 DTE) -> mensal
