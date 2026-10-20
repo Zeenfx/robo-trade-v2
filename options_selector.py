@@ -1,12 +1,12 @@
 """Escolhe a opcao (call p/ long, put p/ short) com delta, liquidez e spread adequados."""
 from datetime import datetime
 import config
-from iv_filter import pick_expiration
+from iv_filter import pick_expiration, is_weekly_symbol
 
 def select(api, signal, today):
     exps = api.expirations(signal.ticker)
     pick = pick_expiration(exps, today, target=45, lo=config.OPT_MIN_DTE, hi=config.OPT_MAX_DTE)
-    if not pick: return None, "sem vencimento entre %d e %d DTE" % (config.OPT_MIN_DTE, config.OPT_MAX_DTE)
+    if not pick: return None, "sem vencimento mensal entre %d e %d DTE" % (config.OPT_MIN_DTE, config.OPT_MAX_DTE)
     exp, dte = pick
     side = "call" if signal.direction == "long" else "put"
     d_an, an = api.analytics(signal.ticker, exp, side=side)
@@ -15,7 +15,7 @@ def select(api, signal, today):
     best, why = None, "nenhuma opcao passou nos filtros de delta/liquidez/spread"
     for a in an:
         s = book.get(a["symbol"])
-        if not s or a.get("delta") is None: continue
+        if not s or a.get("delta") is None or is_weekly_symbol(a["symbol"]): continue
         dl = abs(a["delta"])
         if not (config.DELTA_MIN <= dl <= config.DELTA_MAX): continue
         bid, ask = s.get("bid") or 0, s.get("ask") or 0
