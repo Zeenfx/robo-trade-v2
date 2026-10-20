@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS iv_history(ticker TEXT, date TEXT, iv REAL, expiratio
 CREATE TABLE IF NOT EXISTS watchlist(date TEXT, ticker TEXT, iv REAL, iv_rank REAL, iv_pct REAL, PRIMARY KEY(date,ticker));
 CREATE TABLE IF NOT EXISTS iv_status(date TEXT, ticker TEXT, iv REAL, iv_rank REAL, iv_pct REAL, approved INTEGER, note TEXT, PRIMARY KEY(date,ticker));
 CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, ticker TEXT, direction TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS runs(job TEXT, date TEXT, PRIMARY KEY(job,date));
 CREATE TABLE IF NOT EXISTS iv_nodata_v2(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
@@ -93,3 +94,18 @@ def was_tried(ticker, date):
 def count_iv(ticker):
     with conn() as c:
         return c.execute("SELECT COUNT(*) n FROM iv_history WHERE ticker=?", (ticker,)).fetchone()["n"]
+
+def get_meta(k):
+    with conn() as c:
+        r = c.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+    return r["v"] if r else None
+
+def ensure_iv_method(tag):
+    """Se o metodo de calculo da IV mudou, descarta o historico antigo (para refazer o backfill). True se descartou."""
+    if get_meta("iv_method") == tag:
+        return False
+    with conn() as c:
+        for t in ("iv_history", "iv_status", "watchlist", "iv_nodata_v2"):
+            c.execute(f"DELETE FROM {t}")
+        c.execute("INSERT OR REPLACE INTO meta VALUES('iv_method', ?)", (tag,))
+    return True
