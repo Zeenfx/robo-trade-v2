@@ -126,3 +126,17 @@ def latest_status_date():
     with conn() as c_:
         r = c_.execute("SELECT MAX(date) d FROM iv_status").fetchone()
     return r["d"] if r else None
+
+def iv_series_until(ticker, date, window):
+    """IV salva ate 'date' (inclusive), das mais antigas para as mais recentes."""
+    with conn() as c_:
+        rows = c_.execute("SELECT iv FROM iv_history WHERE ticker=? AND date<=? ORDER BY date DESC LIMIT ?", (ticker, date, window)).fetchall()
+    return [r["iv"] for r in rows][::-1]
+
+def has_iv_on(ticker, date):
+    with conn() as c_:
+        return c_.execute("SELECT 1 FROM iv_history WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None
+
+def set_meta(k, v):
+    with conn() as c_:
+        c_.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))

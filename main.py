@@ -262,6 +262,36 @@ def job_shadow_report():
         res.append((r, shadow.outcome(json.loads(r["payload"]), r["date"], daily, TZ)))
     messenger.send(shadow.summary(res))
 
+def job_check_iv():
+    """Manda no Telegram a IV/Rank/Percentil do ativo nas datas pedidas e o veredito das regras A, B e C. Roda uma vez por valor de CHECK_IV."""
+    spec = config.CHECK_IV.strip()
+    if not spec or ":" not in spec or database.get_meta("check:" + spec):
+        return
+    t, ds = spec.split(":", 1)
+    t = t.strip().upper()
+    lines = [f"Conferencia IV {t} (regra A = Rank<=25 e Pct<=30; C = Rank<=60; B = sem filtro)"]
+    for d in [x.strip() for x in ds.split(",") if x.strip()]:
+        r = iv_filter.evaluate_on(t, d)
+        if r is None:
+            lines.append(f"{d}: sem IV salva")
+        elif "rank" not in r:
+            lines.append(f"{d}: IV {r['iv']*100:.1f}% | historico insuficiente ({r['n']} pregoes)")
+        else:
+            lines.append(f"{d}: IV {r['iv']*100:.1f}% | Rank {r['rank']:.0f} | Pct {r['pct']:.0f} | A {'sim' if r['A'] else 'nao'} | C {'sim' if r['C'] else 'nao'} | B sim")
+    messenger.send("\n".join(lines))
+    database.set_meta("check:" + spec, "1")
+
+def _once(name, fn):
+    """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
+    def run():
+        key = f"once:{name}:{os.getenv(name, '')}"
+        if database.get_meta(key):
+            log.info("%s ja executado para este valor; ignorando", name)
+            return
+        database.set_meta(key, "1")
+        fn()
+    return run
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -283,16 +313,18 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    if config.CHECK_IV:
+        s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")
     if os.getenv("BACKTEST_IV"):
-        s.add_job(job_backtest_iv, "date", run_date=now() + timedelta(seconds=40), id="backtest_iv")
+        s.add_job(_once("BACKTEST_IV", job_backtest_iv), "date", run_date=now() + timedelta(seconds=40), id="backtest_iv")
     if os.getenv("DEBUG_IV"):
-        s.add_job(job_debug_iv, "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
+        s.add_job(_once("DEBUG_IV", job_debug_iv), "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
     log.info("Agendador iniciado (%s)", config.TZ)
     s.start()
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "check-iv": job_check_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")
