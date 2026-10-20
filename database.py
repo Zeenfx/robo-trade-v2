@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS watchlist(date TEXT, ticker TEXT, iv REAL, iv_rank RE
 CREATE TABLE IF NOT EXISTS iv_status(date TEXT, ticker TEXT, iv REAL, iv_rank REAL, iv_pct REAL, approved INTEGER, note TEXT, PRIMARY KEY(date,ticker));
 CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, ticker TEXT, direction TEXT, payload TEXT);
 CREATE TABLE IF NOT EXISTS runs(job TEXT, date TEXT, PRIMARY KEY(job,date));
-CREATE TABLE IF NOT EXISTS iv_tried(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
+CREATE TABLE IF NOT EXISTS iv_nodata_v2(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
 """
 
@@ -84,8 +84,8 @@ def done(job, date):
 
 def mark_tried(ticker, date):
     with conn() as c:
-        c.execute("INSERT OR REPLACE INTO iv_tried VALUES(?,?)", (ticker, date))
+        c.execute("INSERT OR REPLACE INTO iv_nodata_v2 VALUES(?,?)", (ticker, date))
 
 def was_tried(ticker, date):
     with conn() as c:
-        return c.execute("SELECT 1 FROM iv_tried WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None
+        return c.execute("SELECT 1 FROM iv_nodata_v2 WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None

@@ -3,7 +3,7 @@ import sys, logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import config, database, messenger, screener, analyzer, options_selector, iv_filter
-from data_fetcher import Brapi, BrapiError
+from data_fetcher import Brapi, BrapiError, BrapiPlanError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -11,8 +11,16 @@ TZ = ZoneInfo(config.TZ)
 
 def now(): return datetime.now(TZ)
 
+def plan_alert(e):
+    """Erro de plano/chave da brapi: avisa uma vez por dia no Telegram e interrompe."""
+    log.error("brapi recusou o acesso (%s). Verifique o plano Pro e o BRAPI_TOKEN.", e)
+    today = str(now().date())
+    if not database.done("planwarn", today):
+        database.mark_done("planwarn", today)
+        messenger.send("⚠️ Radar de Opções: a brapi recusou o acesso às opções (plano Pro ou token). Nenhum alerta será gerado até corrigir.")
+
 def job_eod():
-    """Apos ~21:30: coleta IV ATM do pregao, calcula Rank/Percentile, monta a watchlist de amanha."""
+    """Coleta IV ATM do ultimo pregao, calcula Rank/Percentile e monta a watchlist. Retorna ativos com sucesso."""
     api, ok = Brapi(), 0
     trade_date = None
     for t in config.UNIVERSE:
@@ -23,9 +31,12 @@ def job_eod():
             iv, rank, pct, approved, note = iv_filter.evaluate(t)
             database.save_iv_status(trade_date, t, iv, rank, pct, approved, note)
             ok += 1
+        except BrapiPlanError as e:
+            plan_alert(e); break
         except BrapiError as e:
             log.error("%s: %s", t, e)
     log.info("EOD concluido: %d/%d ativos; data %s", ok, len(config.UNIVERSE), trade_date)
+    return ok
 
 def job_pre():
     """Pre-abertura: avisa a watchlist do dia (uma mensagem curta)."""
@@ -80,10 +91,13 @@ def job_backfill(days=365, budget=None):
             if d.weekday() < 5 and not database.has_iv(t, str(d)) and not database.was_tried(t, str(d)):
                 try:
                     if not iv_filter.collect_iv(api, t, trade_date=str(d)):
-                        database.mark_tried(t, str(d))
+                        database.mark_tried(t, str(d))      # sem dados nesse dia (feriado etc.)
+                except BrapiPlanError as e:
+                    plan_alert(e); return False              # nao marca: tenta de novo apos corrigir o plano
                 except BrapiError as e:
                     log.debug("%s %s: %s", t, d, e)
-                    database.mark_tried(t, str(d))
+                    if e.status in (400, 404):
+                        database.mark_tried(t, str(d))
             d += timedelta(days=1)
         log.info("Backfill %s concluido", t)
     return True
@@ -93,9 +107,14 @@ def job_bootstrap():
     if database.min_history(config.UNIVERSE) >= config.IV_MIN_HISTORY:
         return
     log.info("Historico de IV insuficiente: iniciando backfill (pode levar um bom tempo)")
-    job_backfill(365)
+    if job_backfill(365) is not True:
+        return
     job_eod()
-    messenger.send("Radar de Opções: histórico de IV carregado; robô ativo.")
+    n = database.min_history(config.UNIVERSE)
+    if n >= config.IV_MIN_HISTORY:
+        messenger.send("Radar de Opções: histórico de IV carregado; robô ativo.")
+    else:
+        log.warning("Backfill terminou, mas o historico ainda e insuficiente (%d pregoes no ativo mais curto)", n)
 
 def job_telegram_test():
     messenger.send("Radar de Opções: teste de conexão com o Telegram OK.")
@@ -113,11 +132,12 @@ def job_tick():
     slot = t.hour * 60 + (t.minute // 5) * 5            # minutos desde 00:00, em passos de 5
     if database.min_history(config.UNIVERSE) < config.IV_MIN_HISTORY:
         if job_backfill(365, budget=240):
-            job_eod()
+            if job_eod() >= len(config.UNIVERSE) // 2:
+                messenger.send("Radar de Opções: histórico de IV carregado; robô ativo.")
         return
     if 8 * 60 + 30 <= slot < 10 * 60 and not database.done("eod", today):
-        job_eod()
-        database.mark_done("eod", today)
+        if job_eod() > 0:
+            database.mark_done("eod", today)
     if config.WATCHLIST_MSG and 9 * 60 + 30 <= slot < 10 * 60 and not database.done("pre", today):
         job_pre()
         database.mark_done("pre", today)
@@ -143,6 +163,7 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour=10, minute="0,5,10", id="open5b")
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="10-17", minute="15,30,45", id="m15a")
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
+    s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
     log.info("Agendador iniciado (%s)", config.TZ)
     s.start()

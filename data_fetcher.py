@@ -6,7 +6,12 @@ import config
 log = logging.getLogger("data")
 
 class BrapiError(Exception):
-    pass
+    def __init__(self, msg, status=None):
+        super().__init__(msg)
+        self.status = status
+
+class BrapiPlanError(BrapiError):
+    """Token sem acesso ao recurso (401/403): plano Gratuito sem opcoes, chave invalida."""
 
 class Brapi:
     def __init__(self, token=None, base=None):
@@ -20,10 +25,12 @@ class Brapi:
             if r.status_code == 429:
                 time.sleep(float(r.headers.get("Retry-After", 2 * (i + 1))))
                 continue
+            if r.status_code in (401, 403):
+                raise BrapiPlanError(f"{r.status_code} {path} {params} {r.text[:200]}", r.status_code)
             if r.status_code >= 400:
-                raise BrapiError(f"{r.status_code} {path} {params} {r.text[:200]}")
+                raise BrapiError(f"{r.status_code} {path} {params} {r.text[:200]}", r.status_code)
             return r.json()
-        raise BrapiError(f"429 persistente em {path}")
+        raise BrapiError(f"429 persistente em {path}", 429)
 
     def history(self, symbol, range_="3mo", interval="1d"):
         """Candles ordenados do mais antigo ao mais recente. date = unix segundos."""
