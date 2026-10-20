@@ -80,3 +80,22 @@ def collect_iv(api, ticker, trade_date=None, today=None):
         return None
     database.save_iv(ticker, d, iv, pick[0])
     return d, iv
+
+
+RULES = [(25, 30), (30, 40), (40, 40), (50, 50)]
+
+def backtest_series(series, window=None, min_hist=None, rules=None):
+    """Walk-forward: para cada dia usa so o passado (ate 'window' pregoes) e conta aprovacoes por regra (rank_max, pct_max)."""
+    window = window or config.IV_WINDOW
+    min_hist = min_hist or config.IV_MIN_HISTORY
+    rules = rules or RULES
+    days, hits = 0, {r: 0 for r in rules}
+    for i in range(min_hist - 1, len(series)):
+        w = series[max(0, i + 1 - window): i + 1]
+        cur = w[-1]
+        rk, pc = iv_rank(w, cur), iv_percentile(w, cur)
+        days += 1
+        for r in rules:
+            if rk <= r[0] and pc <= r[1]:
+                hits[r] += 1
+    return days, hits

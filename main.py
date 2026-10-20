@@ -183,6 +183,31 @@ def job_debug_iv():
     except BrapiError as e:
         messenger.send(f"Diagnostico IV {t} falhou: {e}")
 
+def job_backtest_iv():
+    """Conta em quantos pregoes cada regra Rank/Percentil teria aprovado cada ativo (historico salvo). Manda resumo no Telegram."""
+    tot_days, tot = 0, {r: 0 for r in iv_filter.RULES}
+    rows = []
+    for t in config.UNIVERSE:
+        s = database.iv_series(t, 10000)
+        days, hits = iv_filter.backtest_series(s)
+        if not days:
+            continue
+        tot_days += days
+        for r in tot:
+            tot[r] += hits[r]
+        rows.append((t, days, hits))
+    if not rows:
+        messenger.send("Backtest IV: historico insuficiente ainda.")
+        return
+    fmt = lambda r: f"{r[0]}/{r[1]}"
+    lines = [f"Backtest IV ({len(rows)} ativos, {tot_days} ativo-dias)", "Regra Rank/Pct: % dos dias aprovados"]
+    for r in iv_filter.RULES:
+        lines.append(f"{fmt(r)}{' (atual)' if r == (25, 30) else ''}: {tot[r] / tot_days * 100:.1f}% ({tot[r]} dias)")
+    lines.append("Por ativo (atual 25/30 | 40/40):")
+    for t, days, h in sorted(rows, key=lambda x: -x[2][(25, 30)]):
+        lines.append(f"{t}: {h[(25, 30)]}/{days} | {h[(40, 40)]}/{days}")
+    messenger.send("\n".join(lines))
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -204,6 +229,8 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    if os.getenv("BACKTEST_IV"):
+        s.add_job(job_backtest_iv, "date", run_date=now() + timedelta(seconds=40), id="backtest_iv")
     if os.getenv("DEBUG_IV"):
         s.add_job(job_debug_iv, "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
     log.info("Agendador iniciado (%s)", config.TZ)
@@ -211,7 +238,7 @@ def serve():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")

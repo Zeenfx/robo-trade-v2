@@ -184,3 +184,12 @@ def test_option_selector_skips_weekly_options():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     opt, _ = options_selector.select(Api2(), s, date(2026, 10, 8))
     assert opt and opt["symbol"] == "AAA"
+
+
+def test_backtest_series():
+    import iv_filter
+    # IV caindo ate o minimo no fim: ultimo dia deve ser aprovado em todas as regras
+    series = [30 + (i % 7) for i in range(100)] + [20]
+    days, hits = iv_filter.backtest_series(series, window=252, min_hist=60)
+    assert days == 42
+    assert hits[(25, 30)] >= 1 and hits[(50, 50)] >= hits[(25, 30)]
