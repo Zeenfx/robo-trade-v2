@@ -29,6 +29,8 @@ DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 PROFIT_LINK_TEMPLATE = os.getenv("PROFIT_LINK_TEMPLATE", "https://profitchart.com.br/chart?ticker={ticker}&timeframe=5m")
 TZ = "America/Sao_Paulo"
 # Mensagem das 09:30 com a watchlist (desligada: especificacao pede nenhum aviso antes do sinal completo)
+SHADOW = os.getenv("SHADOW", "true").lower() == "true"   # registra em segredo sinais das regras B/C de IV
+SHADOW_C_RANK_MAX = 60
 WATCHLIST_MSG = os.getenv("WATCHLIST_MSG", "false").lower() == "true"
 
 DEFAULT_UNIVERSE = [

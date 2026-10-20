@@ -1,3 +1,4 @@
+import json
 """Orquestracao (EOD as 08:30; no Railway a 1a subida faz o backfill sozinha). Uso: python main.py tick (cron) | serve (sempre ligado) | pre | intraday | eod | backfill [dias] | status | telegram-test"""
 import os, sys, logging
 from datetime import datetime, timedelta
@@ -85,6 +86,37 @@ def job_intraday():
         messenger.send(messenger.full_msg(s, iv, opt, err))
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
     log.info("Intraday: %d na watchlist, %d sinais", len(wl), len(sigs))
+    if config.SHADOW:
+        try:
+            job_shadow(api, t0, wl)
+        except Exception as e:   # o registro paralelo nunca pode atrapalhar o alerta real
+            log.warning("Shadow falhou: %s", e)
+
+def job_shadow(api, t0, wl):
+    """Roda a mesma deteccao de rompimento nos ativos fora da watchlist e grava (sem alertar) o que as regras B e C teriam enviado."""
+    d = database.latest_status_date()
+    if not d:
+        return
+    n = 0
+    for r in database.latest_status(d):
+        t = r["ticker"]
+        if r["iv_rank"] is None:
+            continue
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = api.history(t, "5d", "15m")
+            if not m15 or datetime.fromtimestamp(m15[-1]["date"], TZ).date() != t0.date():
+                continue
+            s = analyzer.analyze(t, daily, m15, t0)
+        except BrapiError as e:
+            log.debug("shadow %s: %s", t, e); continue
+        if not s:
+            continue
+        a = iv_filter.iv_favoravel(r["iv_rank"], r["iv_pct"])
+        c = r["iv_rank"] <= config.SHADOW_C_RANK_MAX
+        database.save_shadow(str(t0.date()), t, s.direction, t0.isoformat(), r["iv"], r["iv_rank"], r["iv_pct"], a, True, c, s.dict())
+        n += 1
+    log.info("Shadow: %d sinais registrados (sem envio)", n)
 
 def job_backfill(days=365, budget=None):
     """Reconstroi IV historica (1 chamada de analytics por ativo/dia). Retomavel.
@@ -215,6 +247,22 @@ def job_backtest_iv():
         lines.append(f"{t}: {h[(25, 30)]}/{days} | {h[(40, 40)]}/{days}")
     messenger.send("\n".join(lines))
 
+def job_shadow_report():
+    """Resultado (alvo x stop no ativo, em R) dos sinais registrados, por regra A/B/C. Manda resumo no Telegram."""
+    import shadow
+    rows = database.shadow_rows()
+    if not rows:
+        messenger.send("Shadow IV: ainda sem sinais registrados.")
+        return
+    api, res = Brapi(), []
+    for r in rows:
+        try:
+            daily = api.history(r["ticker"], "6mo", "1d")
+        except BrapiError:
+            continue
+        res.append((r, shadow.outcome(json.loads(r["payload"]), r["date"], daily, TZ)))
+    messenger.send(shadow.summary(res))
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -245,7 +293,7 @@ def serve():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")
