@@ -251,3 +251,16 @@ def test_check_iv_runs_once(monkeypatch, tmp_path):
     main.job_check_iv()
     assert len(sent) == 1
     assert "2026-09-30" in sent[0] and "A sim" in sent[0] and "2026-09-29: sem IV salva" in sent[0]
+
+
+def test_once_wrapper(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "o.db"))
+    monkeypatch.setenv("DEBUG_IV", "PETR4")
+    calls = []
+    run = main._once("DEBUG_IV", lambda: calls.append(1))
+    run(); run()
+    assert calls == [1]
+    monkeypatch.setenv("DEBUG_IV", "VALE3")   # novo valor roda de novo
+    main._once("DEBUG_IV", lambda: calls.append(2))()
+    assert calls == [1, 2]

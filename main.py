@@ -282,6 +282,17 @@ def job_check_iv():
     messenger.send("\n".join(lines))
     database.set_meta("check:" + spec, "1")
 
+def _once(name, fn):
+    """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
+    def run():
+        key = f"once:{name}:{os.getenv(name, '')}"
+        if database.get_meta(key):
+            log.info("%s ja executado para este valor; ignorando", name)
+            return
+        database.set_meta(key, "1")
+        fn()
+    return run
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -306,9 +317,9 @@ def serve():
     if config.CHECK_IV:
         s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")
     if os.getenv("BACKTEST_IV"):
-        s.add_job(job_backtest_iv, "date", run_date=now() + timedelta(seconds=40), id="backtest_iv")
+        s.add_job(_once("BACKTEST_IV", job_backtest_iv), "date", run_date=now() + timedelta(seconds=40), id="backtest_iv")
     if os.getenv("DEBUG_IV"):
-        s.add_job(job_debug_iv, "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
+        s.add_job(_once("DEBUG_IV", job_debug_iv), "date", run_date=now() + timedelta(seconds=20), id="debug_iv")
     log.info("Agendador iniciado (%s)", config.TZ)
     s.start()
 
