@@ -193,3 +193,46 @@ def test_backtest_series():
     days, hits = iv_filter.backtest_series(series, window=252, min_hist=60)
     assert days == 42
     assert hits[(25, 30)] >= 1 and hits[(50, 50)] >= hits[(25, 30)]
+
+
+def test_shadow_outcome_and_summary():
+    import shadow
+    from datetime import datetime
+    ts = lambda d: int(datetime(2026, 10, d, 12, tzinfo=TZ).timestamp())
+    sig = {"price": 10.0, "stop": 9.0, "target": 12.0, "direction": "long"}
+    up = [{"date": ts(20), "high": 10.5, "low": 9.5, "close": 10.2}, {"date": ts(21), "high": 12.1, "low": 10.0, "close": 12.0}]
+    assert shadow.outcome(sig, "2026-10-20", up, TZ) == ("alvo", 2.0)
+    dn = [{"date": ts(20), "high": 10.5, "low": 8.9, "close": 9.0}]
+    assert shadow.outcome(sig, "2026-10-20", dn, TZ) == ("stop", -1.0)
+    short = {"price": 10.0, "stop": 11.0, "target": 8.0, "direction": "short"}
+    assert shadow.outcome(short, "2026-10-20", [{"date": ts(20), "high": 10.4, "low": 9.0, "close": 9.5}], TZ)[0] == "aberto"
+    rows = [({"rule_a": 1, "rule_b": 1, "rule_c": 1}, ("alvo", 2.0)), ({"rule_a": 0, "rule_b": 1, "rule_c": 1}, ("stop", -1.0))]
+    out = shadow.summary(rows)
+    assert "A (25/30): 1 | 1/0/0 | +2.00R" in out and "B (sem filtro): 2" in out
+
+
+def test_save_shadow_dedup(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "t.db"))
+    database.save_shadow("2026-10-20", "MGLU3", "long", "x", 0.5, 20, 25, 1, 1, 1, {"a": 1})
+    database.save_shadow("2026-10-20", "MGLU3", "long", "y", 0.5, 20, 25, 1, 1, 1, {"a": 2})
+    assert len(database.shadow_rows()) == 1
+    assert database.latest_status_date() is None
+
+
+def test_job_shadow_records_without_sending(monkeypatch, tmp_path):
+    import main, analyzer
+    from datetime import datetime
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "s.db"))
+    database.save_iv_status("2026-10-19", "MGLU3", 0.5, 40.0, 50.0, False)
+    database.save_iv_status("2026-10-19", "VALE3", 0.3, None, None, False)
+    t0 = datetime(2026, 10, 20, 11, 0, tzinfo=TZ)
+    class Api:
+        def history(self, t, r, i): return [{"date": int(t0.timestamp())}]
+    sig = analyzer.Signal("MGLU3", "long", 6.0, 5.9, 5.7, 6.4, 0.2, 1.8, "alta", "", "2 closes", "medio")
+    monkeypatch.setattr(main.analyzer, "analyze", lambda *a: sig)
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    main.job_shadow(Api(), t0, {})
+    rows = database.shadow_rows()
+    assert len(rows) == 1 and rows[0]["ticker"] == "MGLU3"
+    assert (rows[0]["rule_a"], rows[0]["rule_b"], rows[0]["rule_c"]) == (0, 1, 1) and not sent

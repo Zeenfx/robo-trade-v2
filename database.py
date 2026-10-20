@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS runs(job TEXT, date TEXT, PRIMARY KEY(job,date));
 CREATE TABLE IF NOT EXISTS iv_nodata_v2(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
+CREATE TABLE IF NOT EXISTS shadow_signals(date TEXT, ticker TEXT, direction TEXT, ts TEXT, iv REAL, iv_rank REAL, iv_pct REAL, rule_a INTEGER, rule_b INTEGER, rule_c INTEGER, payload TEXT, PRIMARY KEY(date,ticker,direction));
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
 """
 
@@ -109,3 +110,19 @@ def ensure_iv_method(tag):
             c.execute(f"DELETE FROM {t}")
         c.execute("INSERT OR REPLACE INTO meta VALUES('iv_method', ?)", (tag,))
     return True
+
+
+def save_shadow(date, ticker, direction, ts, iv, rank, pct, a, b, c, payload):
+    """Sinal registrado em segredo (nao vai ao Telegram) para comparar as regras de IV: A (25/30), B (so aviso), C (bloqueia Rank>60)."""
+    with conn() as c_:
+        c_.execute("INSERT OR IGNORE INTO shadow_signals VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                   (date, ticker, direction, ts, iv, rank, pct, int(a), int(b), int(c), json.dumps(payload, default=str)))
+
+def shadow_rows():
+    with conn() as c_:
+        return [dict(x) for x in c_.execute("SELECT * FROM shadow_signals ORDER BY date, ticker").fetchall()]
+
+def latest_status_date():
+    with conn() as c_:
+        r = c_.execute("SELECT MAX(date) d FROM iv_status").fetchone()
+    return r["d"] if r else None
