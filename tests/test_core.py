@@ -236,3 +236,18 @@ def test_job_shadow_records_without_sending(monkeypatch, tmp_path):
     rows = database.shadow_rows()
     assert len(rows) == 1 and rows[0]["ticker"] == "MGLU3"
     assert (rows[0]["rule_a"], rows[0]["rule_b"], rows[0]["rule_c"]) == (0, 1, 1) and not sent
+
+
+def test_check_iv_runs_once(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setattr(config, "CHECK_IV", "MGLU3:2026-09-30,2026-09-29")
+    for i in range(70):
+        database.save_iv("MGLU3", f"2026-07-{(i % 28) + 1:02d}-x{i}", 0.5 + i * 0.001, "2026-11-19")
+    database.save_iv("MGLU3", "2026-09-30", 0.40, "2026-11-19")
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    main.job_check_iv()
+    main.job_check_iv()
+    assert len(sent) == 1
+    assert "2026-09-30" in sent[0] and "A sim" in sent[0] and "2026-09-29: sem IV salva" in sent[0]

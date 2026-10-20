@@ -99,3 +99,15 @@ def backtest_series(series, window=None, min_hist=None, rules=None):
             if rk <= r[0] and pc <= r[1]:
                 hits[r] += 1
     return days, hits
+
+
+def evaluate_on(ticker, date):
+    """IV, Rank, Percentil naquela data (so historico ate ela) e veredito das regras A/B/C. None se nao houver dado."""
+    if not database.has_iv_on(ticker, date):
+        return None
+    series = database.iv_series_until(ticker, date, config.IV_WINDOW)
+    if len(series) < config.IV_MIN_HISTORY:
+        return {"n": len(series), "iv": series[-1]}
+    cur = series[-1]
+    r, p = iv_rank(series, cur), iv_percentile(series, cur)
+    return {"n": len(series), "iv": cur, "rank": r, "pct": p, "A": iv_favoravel(r, p), "C": r <= config.SHADOW_C_RANK_MAX}

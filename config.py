@@ -31,6 +31,8 @@ TZ = "America/Sao_Paulo"
 # Mensagem das 09:30 com a watchlist (desligada: especificacao pede nenhum aviso antes do sinal completo)
 SHADOW = os.getenv("SHADOW", "true").lower() == "true"   # registra em segredo sinais das regras B/C de IV
 SHADOW_C_RANK_MAX = 60
+# Conferencia unica: IV/Rank/Pct de um ativo em datas passadas (formato TICKER:AAAA-MM-DD,AAAA-MM-DD). Roda 1x por valor.
+CHECK_IV = os.getenv("CHECK_IV", "MGLU3:2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-05")
 WATCHLIST_MSG = os.getenv("WATCHLIST_MSG", "false").lower() == "true"
 
 DEFAULT_UNIVERSE = [
