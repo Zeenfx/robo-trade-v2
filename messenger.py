@@ -31,7 +31,30 @@ def _dm(iso):
     except Exception:
         return str(iso)
 
-def alert_msg(sig, iv, opt, opt_err):
+def _empate_lines(sig, opt, today=None):
+    """Empate da opcao (strike +/- ask), movimento tipico do ativo no prazo (ATR) e data de saida por tempo."""
+    from datetime import date, datetime, timedelta
+    import math
+    long_ = sig.direction == "long"
+    be = opt["strike"] + opt["ask"] if long_ else opt["strike"] - opt["ask"]
+    need = (be / sig.price - 1) * 100 if long_ else (1 - be / sig.price) * 100
+    pregoes = max(1, round(opt["dte"] * 5 / 7))
+    typ = config.ATR_TO_SIGMA * sig.atr * math.sqrt(pregoes) / sig.price * 100   # ATR ~ amplitude diaria; x0,8 aproxima o desvio-padrao diario
+    veredito = "compensa" if need <= typ else "⚠️ difícil de compensar"
+    sinal = "+" if long_ else "-"
+    out = [f"📐 Empate: ativo em {fmt(be)} ({sinal}{fmt(abs(need),1)}%)",
+           f"   Movimento típico em {opt['dte']} dias: ±{fmt(typ,0)}% → {veredito}"]
+    try:
+        exp = datetime.strptime(opt["expiration"], "%Y-%m-%d").date()
+        hoje = today or date.today()
+        saida = exp - timedelta(days=config.TIME_EXIT_DAYS)
+        if saida > hoje:
+            out.append(f"⏱ Sair em {saida.strftime('%d/%m')} se não andar ({(saida - hoje).days} dias)")
+    except Exception:
+        pass
+    return out
+
+def alert_msg(sig, iv, opt, opt_err, today=None):
     """Uma unica mensagem por alerta: ativo + gatilho, opcao, alvo/stop, risco e IV."""
     long_ = sig.direction == "long"
     kind = "CALL" if long_ else "PUT"
@@ -47,7 +70,9 @@ def alert_msg(sig, iv, opt, opt_err):
     L.append(f"🎯 Alvo {fmt(sig.target)}   🛑 Stop {fmt(sig.stop)}")
     if opt:
         L.append(f"Risco máx. R$ {fmt(opt['max_loss_per_lot'])} por lote · sair se prêmio cair {config.OPTION_STOP_LOSS_PCT}% ({fmt(opt['stop_premium'])})")
-    L += ["", f"📊 IV {fmt(iv['iv']*100,0)}% · Rank {fmt(iv['iv_rank'],0)} · Pct {fmt(iv['iv_pct'],0)} ✅"]
+        L += ["", *_empate_lines(sig, opt, today)]
+    import iv_filter
+    L += ["", f"📊 IV {fmt(iv['iv']*100,0)}% · Rank {fmt(iv['iv_rank'],0)} · Pct {fmt(iv['iv_pct'],0)} {iv_filter.iv_tag(iv['iv_rank'], iv['iv_pct'])}"]
     tpl = config.PROFIT_LINK_TEMPLATE
     if tpl and tpl.lower() != "off":
         url = tpl.format(ticker=opt["symbol"] if opt else sig.ticker)

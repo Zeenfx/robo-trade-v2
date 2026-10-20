@@ -73,7 +73,7 @@ def test_option_selection_liquidity():
     assert opt and opt["symbol"] == "AAA"
     txt = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
     assert "COMPRA CALL" in txt and "🎯 Alvo" in txt and "🛑 Stop" in txt and "<code>AAA</code>" in txt
-    assert "Rank 17" in txt and txt.count("\n") < 14
+    assert "Rank 17" in txt and txt.count("\n") < 18 and "📐 Empate" in txt and "Movimento típico" in txt
     assert "Bid 0,50 / Ask 0,52" in txt and "OI 1.000" in txt
     sem = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), None, "sem liquidez")
     assert "Sem opção líquida: sem liquidez" in sem and "Risco máx" not in sem
@@ -284,3 +284,28 @@ def test_send_falls_back_to_plain_text(monkeypatch):
     monkeypatch.setattr(messenger.requests, "post", post)
     assert messenger.send("Rank<=25 <b>x</b>") is True
     assert len(calls) == 2 and "parse_mode" not in calls[1] and "<b>" not in calls[1]["text"]
+
+
+def test_iv_tag_and_gate(monkeypatch):
+    import iv_filter
+    assert iv_filter.iv_tag(20, 25) == "✅ barata"
+    assert iv_filter.iv_tag(99, 99) == "🔥 cara"
+    assert iv_filter.iv_tag(69, 76) == "⚠️ média"
+    # regra B: IV cara nao bloqueia; regra A (IV_GATE) bloqueia
+    monkeypatch.setattr(database, "iv_series", lambda t, w: [0.3 + i * 0.001 for i in range(100)])
+    assert iv_filter.evaluate("X")[3] is True
+    monkeypatch.setattr(config, "IV_GATE", True)
+    assert iv_filter.evaluate("X")[3] is False
+
+
+def test_empate_lines():
+    import messenger, analyzer
+    from datetime import date
+    sig = analyzer.Signal("PETR4", "long", 58.0, 57.0, 56.0, 62.0, 0.9, 1.6, "alta", "", "2 closes", "medio")
+    opt = {"strike": 58.91, "ask": 3.67, "dte": 30, "expiration": "2026-11-19"}
+    out = "\n".join(messenger._empate_lines(sig, opt, date(2026, 10, 20)))
+    assert "62,58" in out and "+7,9%" in out and "difícil de compensar" in out
+    assert "Sair em 09/11" in out and "(20 dias)" in out
+    put = analyzer.Signal("VALE3", "short", 66.0, 67.0, 68.0, 62.0, 1.0, 1.6, "baixa", "", "2 closes", "medio")
+    out2 = "\n".join(messenger._empate_lines(put, {"strike": 67.39, "ask": 2.38, "dte": 30, "expiration": "2026-11-19"}, date(2026, 10, 20)))
+    assert "65,01" in out2 and "-1,5%" in out2

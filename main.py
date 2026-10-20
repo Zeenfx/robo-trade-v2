@@ -82,10 +82,15 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        messenger.send(messenger.alert_msg(s, iv, opt, err))
+        messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date()))
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
+        try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
+            database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
+                                 iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
+        except Exception as e:
+            log.warning("Registro das regras falhou: %s", e)
     log.info("Intraday: %d na watchlist, %d sinais", len(wl), len(sigs))
-    if config.SHADOW:
+    if config.SHADOW and config.IV_GATE:   # com a regra A ativa, procura tambem sinais fora da watchlist
         try:
             job_shadow(api, t0, wl)
         except Exception as e:   # o registro paralelo nunca pode atrapalhar o alerta real

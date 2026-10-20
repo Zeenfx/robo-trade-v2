@@ -62,7 +62,7 @@ def evaluate(ticker, window=None):
         return (series[-1] if series else None), None, None, False, f"historico insuficiente ({len(series)}/{config.IV_MIN_HISTORY})"
     cur = series[-1]
     r, p = iv_rank(series, cur), iv_percentile(series, cur)
-    return cur, r, p, iv_favoravel(r, p), ""
+    return cur, r, p, (iv_favoravel(r, p) if config.IV_GATE else True), ""
 
 def collect_iv(api, ticker, trade_date=None, today=None):
     """Le analytics do pregao (trade_date=None -> ultimo disponivel) e salva a IV ATM."""
@@ -111,3 +111,12 @@ def evaluate_on(ticker, date):
     cur = series[-1]
     r, p = iv_rank(series, cur), iv_percentile(series, cur)
     return {"n": len(series), "iv": cur, "rank": r, "pct": p, "A": iv_favoravel(r, p), "C": r <= config.SHADOW_C_RANK_MAX}
+
+
+def iv_tag(rank, pct):
+    """Etiqueta da IV para a mensagem: barata / media / cara."""
+    if iv_favoravel(rank, pct):
+        return "✅ barata"
+    if rank > config.IV_TAG_EXPENSIVE_RANK:
+        return "🔥 cara"
+    return "⚠️ média"

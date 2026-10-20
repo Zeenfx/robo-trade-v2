@@ -29,6 +29,11 @@ DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 PROFIT_LINK_TEMPLATE = os.getenv("PROFIT_LINK_TEMPLATE", "https://profitchart.com.br/chart?ticker={ticker}&timeframe=5m")
 TZ = "America/Sao_Paulo"
 # Mensagem das 09:30 com a watchlist (desligada: especificacao pede nenhum aviso antes do sinal completo)
+# Regra B: IV nao bloqueia (so etiqueta). IV_GATE=true volta ao bloqueio Rank<=25 e Pct<=30 (regra A).
+IV_GATE = os.getenv("IV_GATE", "false").lower() == "true"
+ATR_TO_SIGMA = 0.8           # converte ATR D1 em desvio-padrao diario aproximado
+TIME_EXIT_DAYS = 10          # sugestao de saida: vencimento menos N dias
+IV_TAG_EXPENSIVE_RANK = 75   # Rank acima disso = cara
 SHADOW = os.getenv("SHADOW", "true").lower() == "true"   # registra em segredo sinais das regras B/C de IV
 SHADOW_C_RANK_MAX = 60
 # Conferencia unica: IV/Rank/Pct de um ativo em datas passadas (formato TICKER:AAAA-MM-DD,AAAA-MM-DD). Roda 1x por valor.
