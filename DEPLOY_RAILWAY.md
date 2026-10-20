@@ -9,7 +9,7 @@ No GitHub (repositório `robo-trade-v2`):
 3. Mescle na `main` (se usou branch). O Railway faz o deploy sozinho.
 
 ## 2. No Railway, serviço `robo-trade`
-1. **Settings → Cron Schedule:** troque para `*/5 11-20 * * 1-5` (UTC = 08:00–17:55 em Brasília, seg–sex).
+1. **Settings → Cron Schedule:** troque para (vazio: sem cron) (UTC = 08:00–17:55 em Brasília, seg–sex).
 2. **Settings → Deploy → Start Command:** `python main.py tick` (o `railway.json` já define; confira que não há outro comando manual).
 3. **Volume (obrigatório):** clique com o botão direito no serviço → *Attach Volume* → mount path `/data`. Sem volume o robô se recusa a rodar (a execução aparece vermelha), porque o histórico de IV seria apagado a cada passada.
    Se o Railway não permitir volume num serviço cron, use o modo sempre ligado: remova o Cron Schedule e troque o Start Command para `python main.py serve`.

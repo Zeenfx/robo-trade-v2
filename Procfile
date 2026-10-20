@@ -1,1 +1,1 @@
-worker: python main.py tick
+worker: python main.py serve
