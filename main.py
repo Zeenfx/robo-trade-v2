@@ -318,6 +318,8 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
+    s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     if config.CHECK_IV:
         s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")
     if os.getenv("BACKTEST_IV"):
