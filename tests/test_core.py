@@ -138,3 +138,28 @@ def test_debug_iv_sends_summary(monkeypatch):
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 20, 9, 0, tzinfo=TZ))
     main.job_debug_iv()
     assert len(sent) == 1 and "SUZBK430" in sent[0] and "IV ATM usada" in sent[0]
+
+def test_prefers_monthly_expiration():
+    # 20/10/2026: semanal 27/11 (38 DTE) e mensal 19/11 (30 DTE) -> mensal
+    e = iv_filter.pick_expiration(["2026-10-30", "2026-11-13", "2026-11-19", "2026-11-27", "2026-12-18"], date(2026, 10, 20))
+    assert e[0] == "2026-11-19"
+    # sem mensal na janela, aceita semanal
+    assert iv_filter.pick_expiration(["2026-11-27"], date(2026, 10, 20))[0] == "2026-11-27"
+
+def test_atm_iv_needs_enough_series_near_the_money():
+    one = [dict(symbol="A", side="call", strike=44.38, impliedVolatility=0.15, underlyingPrice=43.05)]
+    assert iv_filter.atm_iv(one) is None                       # caso SUZB3 do dia 16/10
+    far = [dict(symbol="A", side="call", strike=60, impliedVolatility=0.9, underlyingPrice=43.05),
+           dict(symbol="B", side="put", strike=30, impliedVolatility=0.8, underlyingPrice=43.05)]
+    assert iv_filter.atm_iv(far) is None                       # muito longe do dinheiro
+    ok = [dict(symbol="C", side="call", strike=43, impliedVolatility=0.27, underlyingPrice=43.05),
+          dict(symbol="P", side="put", strike=43, impliedVolatility=0.25, underlyingPrice=43.05)]
+    assert abs(iv_filter.atm_iv(ok) - 0.26) < 1e-9
+
+def test_ensure_iv_method_resets_once():
+    database.save_iv("RST3", "2026-01-01", 0.3, "x")
+    assert database.ensure_iv_method("tag-x") is True
+    assert database.iv_series("RST3", 10) == []
+    database.save_iv("RST3", "2026-01-02", 0.3, "x")
+    assert database.ensure_iv_method("tag-x") is False         # 2a vez nao apaga
+    assert len(database.iv_series("RST3", 10)) == 1

@@ -15,21 +15,33 @@ def iv_percentile(series, current):
 def iv_favoravel(rank, pct):
     return rank is not None and pct is not None and rank <= config.IV_RANK_MAX and pct <= config.IV_PERCENTILE_MAX
 
-def pick_expiration(expirations, today, target=None, lo=None, hi=None):
-    """Vencimento com DTE mais proximo do alvo, dentro de [lo, hi]."""
+def is_monthly(exp):
+    """Vencimento mensal da B3: 3a sexta (ou o dia util anterior, se feriado) => dia 15 a 21.
+    Os semanais (W1..W5) tem poucas series e pouca liquidez; a IV deles distorce."""
+    return 15 <= datetime.strptime(exp, "%Y-%m-%d").day <= 21
+
+def pick_expiration(expirations, today, target=None, lo=None, hi=None, prefer_monthly=True):
+    """Vencimento com DTE mais proximo do alvo, dentro de [lo, hi], dando preferencia aos mensais."""
     target, lo, hi = target or config.IV_TARGET_DTE, lo or config.IV_MIN_DTE, hi or config.IV_MAX_DTE
-    best = None
+    cands = []
     for e in expirations:
         dte = (datetime.strptime(e, "%Y-%m-%d").date() - today).days
-        if lo <= dte <= hi and (best is None or abs(dte - target) < abs(best[1] - target)):
-            best = (e, dte)
-    return best
+        if lo <= dte <= hi:
+            cands.append((e, dte))
+    if prefer_monthly and any(is_monthly(e) for e, _ in cands):
+        cands = [c for c in cands if is_monthly(c[0])]
+    return min(cands, key=lambda c: abs(c[1] - target)) if cands else None
+
+ATM_BAND = 0.07      # so series com strike a ate 7% do preco do ativo
+ATM_MIN_SERIES = 2   # menos que isso = dado nao confiavel (melhor sem IV do que IV errada)
 
 def atm_iv(analytics):
-    """Media da IV da call e da put mais proximas do dinheiro. None se indisponivel."""
+    """Media da IV da call e da put mais proximas do dinheiro. None se houver poucas series perto do ATM."""
     rows = [a for a in analytics if a.get("impliedVolatility") and a.get("underlyingPrice") and a.get("strike")]
     if not rows: return None
     spot = rows[0]["underlyingPrice"]
+    rows = [a for a in rows if abs(a["strike"] / spot - 1) <= ATM_BAND]
+    if len(rows) < ATM_MIN_SERIES: return None
     out = []
     for side in ("call", "put"):
         s = [a for a in rows if a["side"] == side]

@@ -9,6 +9,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("main")
 TZ = ZoneInfo(config.TZ)
 
+IV_METHOD = "monthly-v2"   # vencimentos mensais + ATM com >= 2 series; mude para forcar a refazer o historico
+
 def now(): return datetime.now(TZ)
 
 def plan_alert(e):
@@ -111,6 +113,8 @@ def job_backfill(days=365, budget=None):
 
 def job_bootstrap():
     """Na 1a subida (ou banco vazio): reconstroi o historico de IV e calcula a watchlist."""
+    if database.ensure_iv_method(IV_METHOD):
+        log.warning("Metodo de IV atualizado (%s): historico antigo descartado; sera refeito", IV_METHOD)
     if database.min_history(config.UNIVERSE) >= config.IV_MIN_HISTORY:
         return
     log.info("Historico de IV insuficiente: iniciando backfill (pode levar um bom tempo)")
@@ -135,6 +139,8 @@ def job_tick():
     t = now()
     if t.weekday() > 4:
         return
+    if database.ensure_iv_method(IV_METHOD):
+        log.warning("Metodo de IV atualizado (%s): historico antigo descartado; sera refeito", IV_METHOD)
     today = str(t.date())
     slot = t.hour * 60 + (t.minute // 5) * 5            # minutos desde 00:00, em passos de 5
     if database.min_history(config.UNIVERSE) < config.IV_MIN_HISTORY:
