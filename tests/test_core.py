@@ -250,7 +250,7 @@ def test_check_iv_runs_once(monkeypatch, tmp_path):
         database.save_iv("MGLU3", f"2026-07-{(i % 28) + 1:02d}-x{i}", 0.5 + i * 0.001, "2026-11-19")
     database.save_iv("MGLU3", "2026-09-30", 0.40, "2026-11-19")
     sent = []
-    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t))
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
     main.job_check_iv()
     main.job_check_iv()
     assert len(sent) == 1
@@ -268,3 +268,19 @@ def test_once_wrapper(monkeypatch, tmp_path):
     monkeypatch.setenv("DEBUG_IV", "VALE3")   # novo valor roda de novo
     main._once("DEBUG_IV", lambda: calls.append(2))()
     assert calls == [1, 2]
+
+
+def test_send_falls_back_to_plain_text(monkeypatch):
+    import messenger
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "1")
+    calls = []
+    class R:
+        def __init__(self, c, t=""): self.status_code, self.text = c, t
+    def post(url, json=None, timeout=0):
+        calls.append(json)
+        return R(400, "Bad Request: can't parse entities") if "parse_mode" in json else R(200)
+    monkeypatch.setattr(messenger.requests, "post", post)
+    assert messenger.send("Rank<=25 <b>x</b>") is True
+    assert len(calls) == 2 and "parse_mode" not in calls[1] and "<b>" not in calls[1]["text"]

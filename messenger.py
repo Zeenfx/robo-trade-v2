@@ -10,6 +10,13 @@ def send(text):
         return False
     r = requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
                       json={"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
+    if r.status_code == 400 and "parse" in r.text.lower():
+        # HTML invalido (ex.: sinal '<' no texto): reenvia como texto puro para a mensagem nao se perder
+        log.warning("Telegram recusou o HTML; reenviando como texto puro: %s", r.text[:120])
+        import re
+        plain = re.sub(r"<[^>]+>", "", text)
+        r = requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json={"chat_id": config.TELEGRAM_CHAT_ID, "text": html.unescape(plain), "disable_web_page_preview": True}, timeout=20)
     if r.status_code != 200:
         log.error("Telegram %s %s", r.status_code, r.text[:200])
         return False

@@ -269,7 +269,7 @@ def job_check_iv():
         return
     t, ds = spec.split(":", 1)
     t = t.strip().upper()
-    lines = [f"Conferencia IV {t} (regra A = Rank<=25 e Pct<=30; C = Rank<=60; B = sem filtro)"]
+    lines = [f"Conferencia IV {t} (regra A = Rank até 25 e Pct até 30; C = Rank até 60; B = sem filtro)"]
     for d in [x.strip() for x in ds.split(",") if x.strip()]:
         r = iv_filter.evaluate_on(t, d)
         if r is None:
@@ -278,8 +278,8 @@ def job_check_iv():
             lines.append(f"{d}: IV {r['iv']*100:.1f}% | historico insuficiente ({r['n']} pregoes)")
         else:
             lines.append(f"{d}: IV {r['iv']*100:.1f}% | Rank {r['rank']:.0f} | Pct {r['pct']:.0f} | A {'sim' if r['A'] else 'nao'} | C {'sim' if r['C'] else 'nao'} | B sim")
-    messenger.send("\n".join(lines))
-    database.set_meta("check:" + spec, "1")
+    if messenger.send("\n".join(lines)):
+        database.set_meta("check:" + spec, "1")
 
 def _once(name, fn):
     """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
