@@ -143,8 +143,8 @@ def test_prefers_monthly_expiration():
     # 20/10/2026: semanal 27/11 (38 DTE) e mensal 19/11 (30 DTE) -> mensal
     e = iv_filter.pick_expiration(["2026-10-30", "2026-11-13", "2026-11-19", "2026-11-27", "2026-12-18"], date(2026, 10, 20))
     assert e[0] == "2026-11-19"
-    # sem mensal na janela, aceita semanal
-    assert iv_filter.pick_expiration(["2026-11-27"], date(2026, 10, 20))[0] == "2026-11-27"
+    # sem mensal na janela: nao usa semanal
+    assert iv_filter.pick_expiration(["2026-11-27"], date(2026, 10, 20)) is None
 
 def test_atm_iv_needs_enough_series_near_the_money():
     one = [dict(symbol="A", side="call", strike=44.38, impliedVolatility=0.15, underlyingPrice=43.05)]
@@ -163,3 +163,24 @@ def test_ensure_iv_method_resets_once():
     database.save_iv("RST3", "2026-01-02", 0.3, "x")
     assert database.ensure_iv_method("tag-x") is False         # 2a vez nao apaga
     assert len(database.iv_series("RST3", 10)) == 1
+
+
+def test_weekly_symbols_are_ignored():
+    assert iv_filter.is_weekly_symbol("SUZBK443W4") and not iv_filter.is_weekly_symbol("SUZBK428")
+    rows = [dict(symbol="SUZBK443W4", side="call", strike=43, impliedVolatility=0.10, underlyingPrice=43.05),
+            dict(symbol="SUZBW443W4", side="put", strike=43, impliedVolatility=0.10, underlyingPrice=43.05)]
+    assert iv_filter.atm_iv(rows) is None                      # so semanais -> sem IV
+
+def test_option_selector_skips_weekly_options():
+    class Api2(FakeApi):
+        def analytics(self, u, e, date=None, side=None):
+            return "2026-10-07", [dict(symbol="AAAW1", strike=10, delta=0.50, impliedVolatility=0.3, allocationRoundLot=100),
+                                  dict(symbol="AAA", strike=10, delta=0.52, impliedVolatility=0.3, allocationRoundLot=100)]
+        def chain(self, u, e, side=None):
+            return "2026-10-07", [dict(symbol="AAAW1", bid=0.50, ask=0.51, openInterest=5000, volume=900),
+                                  dict(symbol="AAA", bid=0.50, ask=0.52, openInterest=1000, volume=200)]
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    opt, _ = options_selector.select(Api2(), s, date(2026, 10, 8))
+    assert opt and opt["symbol"] == "AAA"

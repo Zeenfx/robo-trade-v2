@@ -62,5 +62,5 @@ DELTA_MIN, DELTA_MAX = 0.40, 0.60
 MIN_OPEN_INTEREST = 500
 MIN_VOLUME = 50
 MAX_SPREAD_PCT = 8.0
-OPT_MIN_DTE, OPT_MAX_DTE = 30, 60
+OPT_MIN_DTE, OPT_MAX_DTE = 25, 65   # janela larga o bastante para sempre haver um vencimento mensal
 OPTION_STOP_LOSS_PCT = 50    # manejo: sair se premio perder 50%
