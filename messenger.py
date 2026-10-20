@@ -17,32 +17,32 @@ def send(text):
 
 def fmt(x, n=2): return f"{x:,.{n}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def short_msg(sig, iv):
-    return (f"<b>{sig.ticker}</b> — análise prioritária\nCenário: {sig.direction.upper()}\n"
-            f"Timeframe principal: M15 (confirmação em D1)\n"
-            f"Status: IV aprovado (Rank {fmt(iv['iv_rank'],1)}%, Percentile {fmt(iv['iv_pct'],1)}%)")
+def _dm(iso):
+    """2026-11-19 -> 19/11"""
+    try:
+        return f"{iso[8:10]}/{iso[5:7]}"
+    except Exception:
+        return str(iso)
 
-def full_msg(sig, iv, opt, opt_err):
-    lines = [f"<b>{sig.ticker}</b> — análise completa (toque para copiar: <code>{sig.ticker}</code>)",
-        f"Tendência D1: {sig.trend_d1}",
-        f"Estrutura H1/M15: {sig.h1_note}",
-        f"Gatilho M15: {sig.trigger_m15}",
-        f"Região de interesse: rompimento de R$ {fmt(sig.level)} (preço atual R$ {fmt(sig.price)})",
-        f"Invalidação (stop no ativo): R$ {fmt(sig.stop)}",
-        f"Alvo técnico: R$ {fmt(sig.target)} (risco/retorno 1:{config.RR_TARGET:g})",
-        f"Espaço técnico: {sig.space} | ATR D1: R$ {fmt(sig.atr)} | Ritmo de volume: {fmt(sig.vr,1)}x",
-        f"IV atual (ATM): {fmt(iv['iv']*100,1)}% | IV Rank: {fmt(iv['iv_rank'],1)}% | IV Percentile: {fmt(iv['iv_pct'],1)}%"]
+def alert_msg(sig, iv, opt, opt_err):
+    """Uma unica mensagem por alerta: ativo + gatilho, opcao, alvo/stop, risco e IV."""
+    long_ = sig.direction == "long"
+    kind = "CALL" if long_ else "PUT"
+    verbo = "Rompeu" if long_ else "Perdeu"
+    L = [f"{'🟢' if long_ else '🔴'} <b>COMPRA {kind} · {sig.ticker}</b>",
+         f"{verbo} R$ {fmt(sig.level)} · agora {fmt(sig.price)} · volume {fmt(sig.vr,1)}x", ""]
     if opt:
-        lines += [f"Opção candidata: <code>{opt['symbol']}</code> — toque para copiar e colar na busca do Profit ({opt['side'].upper()} strike {fmt(opt['strike'])}, venc. {opt['expiration']}, {opt['dte']} DTE)",
-            f"Delta {fmt(opt['delta'])} | IV {fmt((opt['iv'] or 0)*100,1)}% | Bid {fmt(opt['bid'])} / Ask {fmt(opt['ask'])} | Spread {fmt(opt['spread_pct'],1)}%",
-            f"Liquidez: OI {opt['oi']} | volume {opt['volume']} (dados do pregão {opt['ref_date']}; confira o book ao vivo)",
-            f"Risco: prêmio pago, máx. R$ {fmt(opt['max_loss_per_lot'])} por lote de {opt['lot']}",
-            f"Manejo: sair se o ativo perder R$ {fmt(sig.stop)} ou se o prêmio cair {config.OPTION_STOP_LOSS_PCT}% (≈ R$ {fmt(opt['stop_premium'])}); realizar no alvo do ativo"]
+        L += [f"📌 <code>{opt['symbol']}</code>  (toque para copiar)",
+              f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])} ({opt['dte']} dias) · delta {fmt(abs(opt['delta']))}",
+              f"Bid {fmt(opt['bid'])} / Ask {fmt(opt['ask'])} · spread {fmt(opt['spread_pct'],0)}% · OI {fmt(opt['oi'],0)}", ""]
     else:
-        lines.append(f"Opção: nenhuma passou nos filtros ({html.escape(str(opt_err))}). Alerta apenas do ativo.")
+        L += [f"Sem opção líquida: {html.escape(str(opt_err))}", ""]
+    L.append(f"🎯 Alvo {fmt(sig.target)}   🛑 Stop {fmt(sig.stop)}")
+    if opt:
+        L.append(f"Risco máx. R$ {fmt(opt['max_loss_per_lot'])} por lote · sair se prêmio cair {config.OPTION_STOP_LOSS_PCT}% ({fmt(opt['stop_premium'])})")
+    L += ["", f"📊 IV {fmt(iv['iv']*100,0)}% · Rank {fmt(iv['iv_rank'],0)} · Pct {fmt(iv['iv_pct'],0)} ✅"]
     tpl = config.PROFIT_LINK_TEMPLATE
     if tpl and tpl.lower() != "off":
-        target = opt["symbol"] if opt else sig.ticker
-        lines.append(f"Profit {'opção' if opt else 'ativo'}: " + html.escape(tpl.format(ticker=target)))
-    lines.append("Apoio à decisão; não é ordem nem recomendação.")
-    return "\n".join(lines)
+        url = tpl.format(ticker=opt["symbol"] if opt else sig.ticker)
+        L.append(f'<a href="{html.escape(url, quote=True)}">Abrir no Profit</a>')
+    return "\n".join(L)

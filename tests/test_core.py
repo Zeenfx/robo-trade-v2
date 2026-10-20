@@ -71,8 +71,12 @@ def test_option_selection_liquidity():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     opt, err = options_selector.select(FakeApi(), s, date(2026, 10, 8))
     assert opt and opt["symbol"] == "AAA"
-    txt = messenger.full_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
-    assert "Invalidação" in txt and "Manejo" in txt and "<code>AAA</code>" in txt
+    txt = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
+    assert "COMPRA CALL" in txt and "🎯 Alvo" in txt and "🛑 Stop" in txt and "<code>AAA</code>" in txt
+    assert "Rank 17" in txt and txt.count("\n") < 14
+    assert "Bid 0,50 / Ask 0,52" in txt and "OI 1.000" in txt
+    sem = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), None, "sem liquidez")
+    assert "Sem opção líquida: sem liquidez" in sem and "Risco máx" not in sem
 
 def test_tick_schedule(monkeypatch):
     import main

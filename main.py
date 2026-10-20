@@ -82,8 +82,7 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        messenger.send(messenger.short_msg(s, iv))
-        messenger.send(messenger.full_msg(s, iv, opt, err))
+        messenger.send(messenger.alert_msg(s, iv, opt, err))
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
     log.info("Intraday: %d na watchlist, %d sinais", len(wl), len(sigs))
     if config.SHADOW:
