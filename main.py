@@ -63,17 +63,23 @@ def job_intraday():
     d, wl = screener.watchlist()
     if not wl: return
     api, t0 = Brapi(), now()
-    sigs = []
+    sigs, sem_dados, analisados, erros, exemplo = [], [], 0, 0, ""
     for t in wl:
         try:
             daily = api.history(t, "3mo", "1d")
             m15 = api.history(t, "5d", "15m")
-            if not m15 or datetime.fromtimestamp(m15[-1]["date"], TZ).date() != t0.date():
+            ult = datetime.fromtimestamp(m15[-1]["date"], TZ) if m15 else None
+            if not ult or ult.date() != t0.date():
+                sem_dados.append(t)
+                if not exemplo:
+                    exemplo = f"{t}: ultimo candle 15m = {ult.strftime('%d/%m %H:%M') if ult else 'nenhum'}"
                 continue  # sem pregao hoje (feriado) ou sem dados
+            analisados += 1
             s = analyzer.analyze(t, daily, m15, t0)
             if s and not database.already_alerted(str(t0.date()), t, s.direction):
                 sigs.append(s)
         except BrapiError as e:
+            erros += 1
             log.error("%s: %s", t, e)
     for s in screener.rank_signals(sigs):
         iv = wl[s.ticker]
@@ -89,7 +95,8 @@ def job_intraday():
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
         except Exception as e:
             log.warning("Registro das regras falhou: %s", e)
-    log.info("Intraday: %d na watchlist, %d sinais", len(wl), len(sigs))
+    log.info("Intraday: %d na watchlist, %d analisados, %d sem dado de hoje, %d erros, %d sinais%s",
+             len(wl), analisados, len(sem_dados), erros, len(sigs), f" | {exemplo}" if exemplo else "")
     if config.SHADOW and config.IV_GATE:   # com a regra A ativa, procura tambem sinais fora da watchlist
         try:
             job_shadow(api, t0, wl)
