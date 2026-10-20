@@ -51,11 +51,14 @@ def collect_iv(api, ticker, trade_date=None, today=None):
     today = today or (datetime.strptime(trade_date, "%Y-%m-%d").date() if trade_date else dt_date.today())
     exps = api.expirations(ticker, include_expired=trade_date is not None)
     pick = pick_expiration(exps, today)
+    loud = trade_date is None            # no backfill (muitas datas) so loga em debug
     if not pick:
+        if loud: log.warning("%s: nenhum vencimento entre %d e %d DTE (disponiveis: %s)", ticker, config.IV_MIN_DTE, config.IV_MAX_DTE, ", ".join(exps[:6]) or "nenhum")
         return None
     d, rows = api.analytics(ticker, pick[0], date=trade_date)
     iv = atm_iv(rows)
     if iv is None or not d:
+        if loud: log.warning("%s: analytics sem IV ATM (vencimento %s, %d series, %d com IV)", ticker, pick[0], len(rows), sum(1 for a in rows if a.get("impliedVolatility")))
         return None
     database.save_iv(ticker, d, iv, pick[0])
     return d, iv

@@ -89,3 +89,7 @@ def mark_tried(ticker, date):
 def was_tried(ticker, date):
     with conn() as c:
         return c.execute("SELECT 1 FROM iv_nodata_v2 WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None
+
+def count_iv(ticker):
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) n FROM iv_history WHERE ticker=?", (ticker,)).fetchone()["n"]

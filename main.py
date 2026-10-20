@@ -36,6 +36,13 @@ def job_eod():
         except BrapiError as e:
             log.error("%s: %s", t, e)
     log.info("EOD concluido: %d/%d ativos; data %s", ok, len(config.UNIVERSE), trade_date)
+    if trade_date:
+        st = database.latest_status(trade_date)
+        apr = [f"{r['ticker']} (rank {r['iv_rank']:.0f}, pct {r['iv_pct']:.0f})" for r in st if r["approved"]]
+        sem = [r["ticker"] for r in st if r["iv_rank"] is None]
+        log.info("Watchlist para amanha: %s", ", ".join(apr) or "nenhum ativo com IV favoravel")
+        if sem: log.info("Sem historico suficiente: %s", ", ".join(sem))
+        log.info("Historico de IV (pregoes): %s", ", ".join(f"{t}={database.count_iv(t)}" for t in config.UNIVERSE))
     return ok
 
 def job_pre():
@@ -99,7 +106,7 @@ def job_backfill(days=365, budget=None):
                     if e.status in (400, 404):
                         database.mark_tried(t, str(d))
             d += timedelta(days=1)
-        log.info("Backfill %s concluido", t)
+        log.info("Backfill %s concluido: %d pregoes de IV salvos", t, database.count_iv(t))
     return True
 
 def job_bootstrap():
