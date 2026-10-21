@@ -26,7 +26,7 @@ def select(api, signal, today):
         if (s.get("openInterest") or 0) < config.MIN_OPEN_INTEREST or (s.get("volume") or 0) < config.MIN_VOLUME: continue
         cand = dict(symbol=a["symbol"], side=side, strike=a["strike"], expiration=exp, dte=dte, delta=a["delta"],
                     iv=a.get("impliedVolatility"), bid=bid, ask=ask, mid=mid, spread_pct=spread,
-                    oi=s.get("openInterest"), volume=s.get("volume"), lot=a.get("allocationRoundLot", 100),
+                    oi=s.get("openInterest"), volume=s.get("volume"), lot=max(a.get("allocationRoundLot") or 0, config.OPTION_LOT),   # lote padrao B3 = 100; a brapi pode informar 1
                     ref_date=d_ch)
         if best is None or abs(dl - 0.5) < abs(abs(best["delta"]) - 0.5): best = cand
     if best is None: return None, why

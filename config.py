@@ -72,4 +72,5 @@ MIN_OPEN_INTEREST = 500
 MIN_VOLUME = 50
 MAX_SPREAD_PCT = 8.0
 OPT_MIN_DTE, OPT_MAX_DTE = 25, 65   # janela larga o bastante para sempre haver um vencimento mensal
+OPTION_LOT = 100            # lote padrao de opcoes na B3
 OPTION_STOP_LOSS_PCT = 50    # manejo: sair se premio perder 50%

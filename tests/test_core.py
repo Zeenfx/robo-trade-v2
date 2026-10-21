@@ -309,3 +309,15 @@ def test_empate_lines():
     put = analyzer.Signal("VALE3", "short", 66.0, 67.0, 68.0, 62.0, 1.0, 1.6, "baixa", "", "2 closes", "medio")
     out2 = "\n".join(messenger._empate_lines(put, {"strike": 67.39, "ask": 2.38, "dte": 30, "expiration": "2026-11-19"}, date(2026, 10, 20)))
     assert "65,01" in out2 and "-1,5%" in out2
+
+
+def test_option_lot_never_below_100():
+    class Api(FakeApi):
+        def analytics(self, *a, **k):
+            d, rows = super().analytics(*a, **k)
+            return d, [dict(r, allocationRoundLot=1) for r in rows]   # brapi informando lote 1
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    opt, _ = options_selector.select(Api(), s, date(2026, 10, 8))
+    assert opt["lot"] >= 100 and abs(opt["max_loss_per_lot"] - opt["ask"] * opt["lot"]) < 1e-9
