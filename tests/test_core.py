@@ -72,11 +72,9 @@ def test_option_selection_liquidity():
     opt, err = options_selector.select(FakeApi(), s, date(2026, 10, 8))
     assert opt and opt["symbol"] == "AAA"
     txt = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
-    assert "COMPRA CALL" in txt and "🎯 Alvo" in txt and "🛑 Stop" in txt and "<code>AAA</code>" in txt
-    assert "Rank 17" in txt and txt.count("\n") < 18 and "📐 Empate" in txt and "Movimento típico" in txt
-    assert "Bid 0,50 / Ask 0,52" in txt and "OI 1.000" in txt
+    assert "CALL" in txt and "<code>AAA</code>" in txt and "Alvo:" in txt and "Stop:" in txt and "BOM" in txt
     sem = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), None, "sem liquidez")
-    assert "Sem opção líquida: sem liquidez" in sem and "Risco máx" not in sem
+    assert "SEM OPÇÃO" in sem
 
 def test_tick_schedule(monkeypatch):
     import main
@@ -298,17 +296,24 @@ def test_iv_tag_and_gate(monkeypatch):
     assert iv_filter.evaluate("X")[3] is False
 
 
-def test_empate_lines():
+def test_alert_msg_verdicts():
     import messenger, analyzer
-    from datetime import date
-    sig = analyzer.Signal("PETR4", "long", 58.0, 57.0, 56.0, 62.0, 0.9, 1.6, "alta", "", "2 closes", "medio")
-    opt = {"strike": 58.91, "ask": 3.67, "dte": 30, "expiration": "2026-11-19"}
-    out = "\n".join(messenger._empate_lines(sig, opt, date(2026, 10, 20)))
-    assert "62,58" in out and "+7,9%" in out and "difícil de compensar" in out
-    assert "Sair em 09/11" in out and "(20 dias)" in out
-    put = analyzer.Signal("VALE3", "short", 66.0, 67.0, 68.0, 62.0, 1.0, 1.6, "baixa", "", "2 closes", "medio")
-    out2 = "\n".join(messenger._empate_lines(put, {"strike": 67.39, "ask": 2.38, "dte": 30, "expiration": "2026-11-19"}, date(2026, 10, 20)))
-    assert "65,01" in out2 and "-1,5%" in out2
+    sig = analyzer.Signal("MGLU3", "long", 13.60, 13.58, 12.98, 14.83, 0.9, 2.2, "alta", "", "2 closes", "medio")
+    opt = {"symbol": "MGLUL160", "strike": 14.86, "ask": 2.39, "bid": 2.32, "dte": 58, "expiration": "2026-12-18",
+           "stop_premium": 1.20, "max_loss_per_lot": 239.0}
+    cara = dict(iv=1.49, iv_rank=100, iv_pct=100)
+    txt = messenger.alert_msg(sig, cara, opt, "")
+    assert "🟢 <b>CALL · MGLU3</b>" in txt and "❌ RUIM" in txt and "alvo só +9%" in txt and "IV cara" in txt
+    assert "R$ 239 por lote" in txt and "<code>MGLUL160</code>" in txt and "Stop: 12,98" in txt and "tesoura" not in txt and "profit" not in txt.lower()
+    media = dict(iv=0.4, iv_rank=50, iv_pct=60)
+    assert "⚠️ NEUTRO" in messenger.alert_msg(sig, media, opt, "")           # alvo nao cobre, IV media
+    put = analyzer.Signal("VALE3", "short", 65.70, 66.10, 66.90, 63.40, 1.0, 2.0, "baixa", "", "2 closes", "medio")
+    popt = {"symbol": "VALEW660", "strike": 66.0, "ask": 1.90, "bid": 1.85, "dte": 58, "expiration": "2026-12-18",
+            "stop_premium": 0.95, "max_loss_per_lot": 190.0}
+    t2 = messenger.alert_msg(put, media, popt, "")
+    assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "Empate -2,4%, alvo -4%. IV média." in t2
+    t3 = messenger.alert_msg(sig, cara, None, "sem liquidez")
+    assert "SEM OPÇÃO" in t3 and "Preço" not in t3 and t3.count("\n") < 10
 
 
 def test_option_lot_never_below_100():

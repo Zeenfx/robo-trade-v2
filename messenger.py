@@ -31,50 +31,43 @@ def _dm(iso):
     except Exception:
         return str(iso)
 
-def _empate_lines(sig, opt, today=None):
-    """Empate da opcao (strike +/- ask), movimento tipico do ativo no prazo (ATR) e data de saida por tempo."""
-    from datetime import date, datetime, timedelta
-    import math
+def _empate(sig, opt):
+    """Empate da opcao (strike +/- preco) e quanto o alvo do ativo anda. Retorna (empate_pct, alvo_pct, alvo_cobre_empate), em % na direcao da operacao."""
     long_ = sig.direction == "long"
     be = opt["strike"] + opt["ask"] if long_ else opt["strike"] - opt["ask"]
     need = (be / sig.price - 1) * 100 if long_ else (1 - be / sig.price) * 100
-    pregoes = max(1, round(opt["dte"] * 5 / 7))
-    typ = config.ATR_TO_SIGMA * sig.atr * math.sqrt(pregoes) / sig.price * 100   # ATR ~ amplitude diaria; x0,8 aproxima o desvio-padrao diario
-    veredito = "compensa" if need <= typ else "⚠️ difícil de compensar"
-    sinal = "+" if long_ else "-"
-    out = [f"📐 Empate: ativo em {fmt(be)} ({sinal}{fmt(abs(need),1)}%)",
-           f"   Movimento típico em {opt['dte']} dias: ±{fmt(typ,0)}% → {veredito}"]
-    try:
-        exp = datetime.strptime(opt["expiration"], "%Y-%m-%d").date()
-        hoje = today or date.today()
-        saida = exp - timedelta(days=config.TIME_EXIT_DAYS)
-        if saida > hoje:
-            out.append(f"⏱ Sair em {saida.strftime('%d/%m')} se não andar ({(saida - hoje).days} dias)")
-    except Exception:
-        pass
-    return out
+    alvo = (sig.target / sig.price - 1) * 100 if long_ else (1 - sig.target / sig.price) * 100
+    return need, alvo, alvo >= need
+
+def _iv_word(rank, pct):
+    import iv_filter
+    return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
 
 def alert_msg(sig, iv, opt, opt_err, today=None):
-    """Uma unica mensagem por alerta: ativo + gatilho, opcao, alvo/stop, risco e IV."""
+    """Mensagem unica e enxuta para celular: direcao (cor), opcao, alvo/stop e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
-    kind = "CALL" if long_ else "PUT"
     verbo = "Rompeu" if long_ else "Perdeu"
-    L = [f"{'🟢' if long_ else '🔴'} <b>COMPRA {kind} · {sig.ticker}</b>",
-         f"{verbo} R$ {fmt(sig.level)} · agora {fmt(sig.price)} · volume {fmt(sig.vr,1)}x", ""]
+    ivw = _iv_word(iv["iv_rank"], iv["iv_pct"])
+    L = [f"{'🟢' if long_ else '🔴'} <b>{'CALL' if long_ else 'PUT'} · {sig.ticker}</b>",
+         f"{verbo} {fmt(sig.level)} · agora {fmt(sig.price)}", ""]
     if opt:
-        L += [f"📌 <code>{opt['symbol']}</code>  (toque para copiar)",
-              f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])} ({opt['dte']} dias) · delta {fmt(abs(opt['delta']))}",
-              f"Bid {fmt(opt['bid'])} / Ask {fmt(opt['ask'])} · spread {fmt(opt['spread_pct'],0)}% · OI {fmt(opt['oi'],0)}", ""]
+        L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",
+              f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])}",
+              f"Preço ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)", ""]
+    L += [f"Alvo: {fmt(sig.target)}", f"Stop: {fmt(sig.stop)}"]
+    if opt:
+        L.append(f"Sair se a opção cair a {fmt(opt['stop_premium'])}")
+        need, alvo, covers = _empate(sig, opt)
+        sinal = "+" if long_ else "-"
+        bom_iv = ivw != "cara"
+        if covers and bom_iv:
+            tag = "✅ BOM"
+        elif not covers and not bom_iv:
+            tag = "❌ RUIM"
+        else:
+            tag = "⚠️ NEUTRO"
+        alvo_txt = f"alvo {sinal}{fmt(abs(alvo),0)}%" if covers else f"alvo só {sinal}{fmt(abs(alvo),0)}%"
+        L += ["", f"<b>{tag}</b>", f"Empate {sinal}{fmt(abs(need),1)}%, {alvo_txt}. IV {ivw}."]
     else:
-        L += [f"Sem opção líquida: {html.escape(str(opt_err))}", ""]
-    L.append(f"🎯 Alvo {fmt(sig.target)}   🛑 Stop {fmt(sig.stop)}")
-    if opt:
-        L.append(f"Risco máx. R$ {fmt(opt['max_loss_per_lot'])} por lote · sair se prêmio cair {config.OPTION_STOP_LOSS_PCT}% ({fmt(opt['stop_premium'])})")
-        L += ["", *_empate_lines(sig, opt, today)]
-    import iv_filter
-    L += ["", f"📊 IV {fmt(iv['iv']*100,0)}% · Rank {fmt(iv['iv_rank'],0)} · Pct {fmt(iv['iv_pct'],0)} {iv_filter.iv_tag(iv['iv_rank'], iv['iv_pct'])}"]
-    tpl = config.PROFIT_LINK_TEMPLATE
-    if tpl and tpl.lower() != "off":
-        url = tpl.format(ticker=opt["symbol"] if opt else sig.ticker)
-        L.append(f'<a href="{html.escape(url, quote=True)}">Abrir no Profit</a>')
+        L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"Nenhuma opção líquida. IV {ivw}."]
     return "\n".join(L)
