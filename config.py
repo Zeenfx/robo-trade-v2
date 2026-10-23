@@ -14,10 +14,18 @@ def _load_env(path=".env"):
 
 _load_env()
 
-BRAPI_TOKEN = os.getenv("BRAPI_TOKEN") or os.getenv("BRAPI_API_KEY", "")
+def _clean(v):
+    """Remove espacos, quebras de linha e aspas coladas junto com o valor da variavel."""
+    return (v or "").strip().strip("'\"").strip()
+
+def _clean_token(v):
+    v = _clean(v)
+    return v[3:] if v.lower().startswith("bot") and ":" in v[3:] else v   # '/botTOKEN' colado por engano
+
+BRAPI_TOKEN = _clean(os.getenv("BRAPI_TOKEN") or os.getenv("BRAPI_API_KEY", ""))
 BRAPI_BASE = "https://brapi.dev/api/v2"
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = _clean_token(os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", ""))
+TELEGRAM_CHAT_ID = _clean(os.getenv("TELEGRAM_CHAT_ID", ""))
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
 ON_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))

@@ -18,7 +18,8 @@ def send(text):
         r = requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
                           json={"chat_id": config.TELEGRAM_CHAT_ID, "text": html.unescape(plain), "disable_web_page_preview": True}, timeout=20)
     if r.status_code != 200:
-        log.error("Telegram %s %s", r.status_code, r.text[:200])
+        dica = " (token do Telegram invalido ou incompleto: confira a variavel TELEGRAM_TOKEN)" if r.status_code in (401, 404) else ""
+        log.error("Telegram %s %s%s", r.status_code, r.text[:200], dica)
         return False
     return True
 
