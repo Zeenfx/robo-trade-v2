@@ -326,3 +326,16 @@ def test_option_lot_never_below_100():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     opt, _ = options_selector.select(Api(), s, date(2026, 10, 8))
     assert opt["lot"] >= 100 and abs(opt["max_loss_per_lot"] - opt["ask"] * opt["lot"]) < 1e-9
+
+
+def test_hello_once_per_token(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "h.db"))
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "tok1")
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
+    main.job_hello(); main.job_hello()
+    assert len(sent) == 1
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "tok2")
+    main.job_hello()
+    assert len(sent) == 2

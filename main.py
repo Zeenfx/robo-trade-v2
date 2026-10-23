@@ -304,6 +304,16 @@ def _once(name, fn):
         fn()
     return run
 
+def job_hello():
+    """Uma mensagem de confirmacao por token do Telegram (so na 1a vez que o token novo sobe): prova que o envio funciona."""
+    import hashlib
+    tag = hashlib.sha256((config.TELEGRAM_BOT_TOKEN or "").encode()).hexdigest()[:10]
+    key = "hello:" + tag
+    if not config.TELEGRAM_BOT_TOKEN or database.get_meta(key):
+        return
+    if messenger.send("Radar de Opções: conexão com o Telegram OK. Vigiando 30 ativos."):
+        database.set_meta(key, "1")
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -325,6 +335,7 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     if config.CHECK_IV:
