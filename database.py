@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS runs(job TEXT, date TEXT, PRIMARY KEY(job,date));
 CREATE TABLE IF NOT EXISTS iv_nodata_v2(ticker TEXT, date TEXT, PRIMARY KEY(ticker,date));
 CREATE TABLE IF NOT EXISTS shadow_signals(date TEXT, ticker TEXT, direction TEXT, ts TEXT, iv REAL, iv_rank REAL, iv_pct REAL, rule_a INTEGER, rule_b INTEGER, rule_c INTEGER, payload TEXT, PRIMARY KEY(date,ticker,direction));
+CREATE TABLE IF NOT EXISTS intraday_stats(ts TEXT, date TEXT, total INTEGER, analisados INTEGER, sem_dado INTEGER, erros INTEGER, sinais INTEGER);
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
 """
 
@@ -140,3 +141,16 @@ def has_iv_on(ticker, date):
 def set_meta(k, v):
     with conn() as c_:
         c_.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
+
+
+def save_stats(ts, date, total, analisados, sem_dado, erros, sinais):
+    with conn() as c_:
+        c_.execute("INSERT INTO intraday_stats VALUES(?,?,?,?,?,?,?)", (ts, date, total, analisados, sem_dado, erros, sinais))
+
+def stats_for(date):
+    with conn() as c_:
+        return [dict(x) for x in c_.execute("SELECT * FROM intraday_stats WHERE date=? ORDER BY ts", (date,)).fetchall()]
+
+def count_alerts(date):
+    with conn() as c_:
+        return c_.execute("SELECT COUNT(*) n FROM alerts WHERE date=?", (date,)).fetchone()["n"]

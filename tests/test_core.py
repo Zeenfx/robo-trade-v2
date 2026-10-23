@@ -339,3 +339,20 @@ def test_hello_once_per_token(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "tok2")
     main.job_hello()
     assert len(sent) == 2
+
+
+def test_daily_summary(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "r.db"))
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 23, 18, 5, tzinfo=TZ))
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
+    main.job_summary()
+    assert sent == []                                   # sem ciclos hoje: nada a dizer
+    database.save_stats("2026-10-23T10:30:00", "2026-10-23", 30, 10, 20, 0, 0)
+    database.save_stats("2026-10-23T17:45:00", "2026-10-23", 30, 12, 18, 0, 0)
+    main.job_summary()
+    assert "Alertas enviados: 0" in sent[0] and "até 12/30" in sent[0] and "Dados incompletos" in sent[0]
+    database.save_stats("2026-10-23T17:50:00", "2026-10-23", 30, 29, 1, 0, 0)
+    main.job_summary()
+    assert "Sem rompimento confirmado hoje." in sent[1]

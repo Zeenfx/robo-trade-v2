@@ -95,6 +95,10 @@ def job_intraday():
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
         except Exception as e:
             log.warning("Registro das regras falhou: %s", e)
+    try:
+        database.save_stats(t0.isoformat(), str(t0.date()), len(wl), analisados, len(sem_dados), erros, len(sigs))
+    except Exception as e:
+        log.warning("Estatistica do ciclo nao gravada: %s", e)
     log.info("Intraday: %d na watchlist, %d analisados, %d sem dado de hoje, %d erros, %d sinais%s",
              len(wl), analisados, len(sem_dados), erros, len(sigs), f" | {exemplo}" if exemplo else "")
     if config.SHADOW and config.IV_GATE:   # com a regra A ativa, procura tambem sinais fora da watchlist
@@ -314,6 +318,27 @@ def job_hello():
     if messenger.send("Radar de Opções: conexão com o Telegram OK. Vigiando 30 ativos."):
         database.set_meta(key, "1")
 
+def job_summary():
+    """Fim do dia: uma mensagem curta com alertas enviados e quantos ativos tinham dado de 15 min (distingue 'sem rompimento' de 'dado incompleto')."""
+    hoje = str(now().date())
+    st = database.stats_for(hoje)
+    if not st:
+        return
+    total = st[-1]["total"]
+    melhor = max(r["analisados"] for r in st)
+    ultimo = st[-1]["analisados"]
+    erros = sum(r["erros"] for r in st)
+    L = [f"Resumo de {now().strftime('%d/%m')}",
+         f"Alertas enviados: {database.count_alerts(hoje)}",
+         f"Ativos com dado de 15 min: até {melhor}/{total} (último ciclo: {ultimo}/{total})"]
+    if erros:
+        L.append(f"Erros de dados: {erros}")
+    if melhor < 0.8 * total:
+        L.append("⚠️ Dados incompletos: o robô pode ter perdido sinais.")
+    elif database.count_alerts(hoje) == 0:
+        L.append("Sem rompimento confirmado hoje.")
+    messenger.send("\n".join(L))
+
 def job_status():
     d, wl = screener.watchlist()
     print("Watchlist:", d, list(wl))
@@ -335,6 +360,7 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    s.add_job(job_summary, "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
@@ -349,7 +375,7 @@ def serve():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "check-iv": job_check_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "summary": job_summary, "check-iv": job_check_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")
