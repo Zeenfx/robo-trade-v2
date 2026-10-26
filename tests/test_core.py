@@ -406,3 +406,19 @@ def test_morning_and_heartbeat(monkeypatch, tmp_path):
     database.save_stats("2026-10-26T12:45:00", "2026-10-26", 30, 30, 0, 0, 0)
     main.job_heartbeat()
     assert "Ciclos: 1" in sent[2] and "30/30" in sent[2] and "Alertas hoje: 0" in sent[2]
+
+
+def test_alert_shows_price_time_and_heartbeat_lag(monkeypatch, tmp_path):
+    import messenger, analyzer, main
+    sig = analyzer.Signal("MGLU3", "long", 13.60, 13.58, 12.98, 14.83, 0.9, 2.2, "alta", "", "2 closes", "medio")
+    sig.asof = "10:45"
+    txt = messenger.alert_msg(sig, dict(iv=1.0, iv_rank=50, iv_pct=60), None, "x")
+    assert "preço 13,60 (das 10:45)" in txt
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "l.db"))
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 13, 0, tzinfo=TZ))
+    database.save_stats("2026-10-26T12:45:00", "2026-10-26", 30, 28, 2, 0, 0)
+    database.set_meta("lag_last", "45")
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
+    main.job_heartbeat()
+    assert "Atraso dos dados: ~45 min ⚠️" in sent[0]

@@ -63,7 +63,7 @@ def job_intraday():
     d, wl = screener.watchlist()
     if not wl: return
     api, t0 = Brapi(), now()
-    sigs, sem_dados, analisados, erros, exemplo = [], [], 0, 0, ""
+    sigs, sem_dados, analisados, erros, exemplo, lags = [], [], 0, 0, "", []
     for t in wl:
         try:
             daily = api.history(t, "3mo", "1d")
@@ -75,8 +75,11 @@ def job_intraday():
                     exemplo = f"{t}: ultimo candle 15m = {ult.strftime('%d/%m %H:%M') if ult else 'nenhum'}"
                 continue  # sem pregao hoje (feriado) ou sem dados
             analisados += 1
+            fecha = ult + timedelta(minutes=15)                  # candle de 15 min: o preco e o do fechamento dele
+            lags.append(max(0, (t0 - fecha).total_seconds() / 60))
             s = analyzer.analyze(t, daily, m15, t0)
             if s and not database.already_alerted(str(t0.date()), t, s.direction):
+                s.asof = fecha.strftime("%H:%M")                  # horario do ultimo preco usado
                 sigs.append(s)
         except BrapiError as e:
             erros += 1
@@ -95,6 +98,12 @@ def job_intraday():
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
         except Exception as e:
             log.warning("Registro das regras falhou: %s", e)
+    if lags:
+        try:
+            import statistics
+            database.set_meta("lag_last", str(int(statistics.median(lags))))
+        except Exception:
+            pass
     try:
         database.save_stats(t0.isoformat(), str(t0.date()), len(wl), analisados, len(sem_dados), erros, len(sigs))
     except Exception as e:
@@ -393,7 +402,9 @@ def job_heartbeat():
     if not st:
         messenger.send(f"{now().strftime('%H:%M')} · ⚠️ robô sem ciclos hoje. Verifique o Railway.")
         return
-    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}\nAlertas hoje: {database.count_alerts(hoje)}")
+    lag = database.get_meta("lag_last")
+    atraso = f"\nAtraso dos dados: ~{lag} min" + (" ⚠️" if lag and int(lag) > 20 else "") if lag else ""
+    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}{atraso}\nAlertas hoje: {database.count_alerts(hoje)}")
 
 def job_status():
     d, wl = screener.watchlist()
