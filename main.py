@@ -91,7 +91,10 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date()))
+        if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:05
+            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date()))
+        else:
+            log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
@@ -338,7 +341,7 @@ def job_summary():
     ultimo = st[-1]["analisados"]
     erros = sum(r["erros"] for r in st)
     L = [f"Resumo de {now().strftime('%d/%m')}",
-         f"Alertas enviados: {database.count_alerts(hoje)}",
+         f"Alertas enviados: {database.count_alerts(hoje, True)}",
          f"Ativos com dado de 15 min: até {melhor}/{total} (último ciclo: {ultimo}/{total})"]
     if erros:
         L.append(f"Erros de dados: {erros}")
@@ -346,6 +349,9 @@ def job_summary():
         L.append("⚠️ Dados incompletos: o robô pode ter perdido sinais.")
     elif database.count_alerts(hoje) == 0:
         L.append("Sem rompimento confirmado hoje.")
+    sem = database.no_option_signals(hoje)
+    if sem:
+        L.append("Sinais sem opção: " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in sem))
     try:
         near = _near_list(Brapi())
         if near:
@@ -404,7 +410,7 @@ def job_heartbeat():
         return
     lag = database.get_meta("lag_last")
     atraso = f"\nAtraso dos dados: ~{lag} min" + (" ⚠️" if lag and int(lag) > 20 else "") if lag else ""
-    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}{atraso}\nAlertas hoje: {database.count_alerts(hoje)}")
+    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}{atraso}\nAlertas hoje: {database.count_alerts(hoje, True)}")
 
 def job_status():
     d, wl = screener.watchlist()

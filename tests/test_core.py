@@ -443,3 +443,10 @@ def test_late_alert_warning():
     assert "⚠️ Já andou 3,2% além do nível" in messenger.alert_msg(late, iv, None, "x")
     ok = analyzer.Signal("ITUB4", "short", 41.20, 41.51, 42.32, 38.0, 0.8, 2.0, "baixa", "", "2 closes", "medio")
     assert "Já andou" not in messenger.alert_msg(ok, iv, None, "x")
+
+def test_sinais_sem_opcao_ficam_fora_do_envio():
+    d = "2099-01-05"
+    database.save_alert(d, "ITUB4", "short", d + "T11:00", {"signal": {}, "option": None})
+    database.save_alert(d, "VALE3", "long", d + "T11:05", {"signal": {}, "option": {"symbol": "X"}})
+    assert database.no_option_signals(d) == [("ITUB4", "short")]
+    assert database.count_alerts(d) == 2 and database.count_alerts(d, True) == 1

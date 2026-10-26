@@ -151,6 +151,14 @@ def stats_for(date):
     with conn() as c_:
         return [dict(x) for x in c_.execute("SELECT * FROM intraday_stats WHERE date=? ORDER BY ts", (date,)).fetchall()]
 
-def count_alerts(date):
+def count_alerts(date, only_sent=False):
+    """Sinais do dia; com only_sent=True, so os que tinham opcao (os que viraram mensagem)."""
     with conn() as c_:
-        return c_.execute("SELECT COUNT(*) n FROM alerts WHERE date=?", (date,)).fetchone()["n"]
+        n = c_.execute("SELECT COUNT(*) n FROM alerts WHERE date=?", (date,)).fetchone()["n"]
+    return n - len(no_option_signals(date)) if only_sent else n
+
+def no_option_signals(date):
+    """[(ticker, direcao)] dos sinais do dia sem opcao liquida (nao enviados)."""
+    with conn() as c_:
+        rows = c_.execute("SELECT ticker, direction, payload FROM alerts WHERE date=? ORDER BY ts", (date,)).fetchall()
+    return [(r["ticker"], r["direction"]) for r in rows if not json.loads(r["payload"]).get("option")]
