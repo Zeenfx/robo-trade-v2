@@ -70,5 +70,5 @@ def alert_msg(sig, iv, opt, opt_err, today=None):
         alvo_txt = f"alvo {sinal}{fmt(abs(alvo),0)}%" if covers else f"alvo só {sinal}{fmt(abs(alvo),0)}%"
         L += ["", f"<b>{tag}</b>", f"Empate {sinal}{fmt(abs(need),1)}%, {alvo_txt}. IV {ivw}."]
     else:
-        L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"Nenhuma opção líquida. IV {ivw}."]
+        L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
     return "\n".join(L)

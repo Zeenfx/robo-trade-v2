@@ -313,7 +313,7 @@ def test_alert_msg_verdicts():
     t2 = messenger.alert_msg(put, media, popt, "")
     assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "Empate -2,4%, alvo -4%. IV média." in t2
     t3 = messenger.alert_msg(sig, cara, None, "sem liquidez")
-    assert "SEM OPÇÃO" in t3 and "Preço" not in t3 and t3.count("\n") < 10
+    assert "SEM OPÇÃO" in t3 and "Sem liquidez" in t3 and "Preço" not in t3 and t3.count("\n") < 10
 
 
 def test_option_lot_never_below_100():
@@ -422,3 +422,15 @@ def test_alert_shows_price_time_and_heartbeat_lag(monkeypatch, tmp_path):
     monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
     main.job_heartbeat()
     assert "Atraso dos dados: ~45 min ⚠️" in sent[0]
+
+
+def test_selector_explains_why_no_option():
+    class Api(FakeApi):
+        def chain(self, *a, **k):
+            d, rows = super().chain(*a, **k)
+            return d, [dict(r, bid=1.0, ask=1.6) for r in rows]          # spread de ~46%
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    opt, why = options_selector.select(Api(), s, date(2026, 10, 8))
+    assert opt is None and why.startswith("spread alto (") and "séries)" in why
