@@ -529,3 +529,16 @@ def test_diagnose_e_job_diag(monkeypatch):
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 19, 0, tzinfo=TZ))
     main.job_diag_opcoes()
     assert len(sent) == 1 and "XX3 ▼ 20/11: 2/3 | 1 | 0 | 0 | 1" in sent[0]
+
+
+def test_send_divide_texto_longo(monkeypatch):
+    calls = []
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "1")
+    class R:
+        status_code = 200; text = "ok"
+    monkeypatch.setattr(messenger.requests, "post", lambda url, json=None, timeout=None: calls.append(json["text"]) or R())
+    txt = "\n".join(f"linha {i:03d} " + "x" * 80 for i in range(100))
+    assert len(txt) > 4096 and messenger.send(txt) is True
+    assert len(calls) >= 3 and all(len(c) <= 3800 for c in calls) and "\n".join(calls) == txt

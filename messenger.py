@@ -4,7 +4,26 @@ import config
 
 log = logging.getLogger("tg")
 
+MAX_LEN = 3800   # limite do Telegram e 4096; folga para o HTML
+
 def send(text):
+    """Envia; textos longos sao divididos em partes (por linha) para o Telegram nao recusar."""
+    if len(text) <= MAX_LEN:
+        return _send_one(text)
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if cur and len(cur) + len(line) + 1 > MAX_LEN:
+            parts.append(cur); cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        parts.append(cur)
+    ok = True
+    for p in parts:
+        ok = _send_one(p) and ok
+    return ok
+
+def _send_one(text):
     if config.DRY_RUN or not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
         log.info("[DRY_RUN] %s", text)
         return False
