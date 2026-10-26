@@ -498,3 +498,13 @@ def test_aviso_dia_atipico_e_ibov():
     class Old(Api):
         def history(self, sym, r, i): return [dict(date=ts(22, 17), close=100.0), dict(date=ts(23, 17), close=99.0)]
     assert main._ibov_change(Old(), now) is None
+
+
+def test_aviso_ultimo_negocio_no_alerta():
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    iv = dict(iv=0.3, iv_rank=17.4, iv_pct=14.7)
+    opt = dict(symbol="AAA", strike=10.0, expiration="2026-12-18", ask=0.8, bid=0.8, max_loss_per_lot=80.0, stop_premium=0.4, delta=0.5, dte=50)
+    assert "Último negócio" not in messenger.alert_msg(s, iv, opt, "")
+    assert "Último negócio, sem compra/venda" in messenger.alert_msg(s, iv, dict(opt, last_only=True), "")

@@ -60,7 +60,10 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
     if opt:
         L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",
               f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])}",
-              f"Preço ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)", ""]
+              f"Preço ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)"]
+        if opt.get("last_only"):
+            L.append("⚠️ Último negócio, sem compra/venda. Confira no Profit")
+        L.append("")
     L += [f"Alvo: {fmt(sig.target)}", f"Stop: {fmt(sig.stop)}"]
     if opt:
         L.append(f"Sair se a opção cair a {fmt(opt['stop_premium'])}")
