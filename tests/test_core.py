@@ -288,7 +288,7 @@ def test_iv_tag_and_gate(monkeypatch):
     import iv_filter
     assert iv_filter.iv_tag(20, 25) == "✅ barata"
     assert iv_filter.iv_tag(99, 99) == "🔥 cara"
-    assert iv_filter.iv_tag(69, 76) == "⚠️ média"
+    assert iv_filter.iv_tag(40, 76) == "⚠️ média" and iv_filter.iv_tag(51, 60) == "🔥 cara"
     # regra B: IV cara nao bloqueia; regra A (IV_GATE) bloqueia
     monkeypatch.setattr(database, "iv_series", lambda t, w: [0.3 + i * 0.001 for i in range(100)])
     assert iv_filter.evaluate("X")[3] is True

@@ -42,7 +42,7 @@ IV_GATE = os.getenv("IV_GATE", "false").lower() == "true"
 ATR_TO_SIGMA = 0.8           # converte ATR D1 em desvio-padrao diario aproximado
 LATE_PCT = 2.0               # aviso de alerta tardio: preco ja passou mais que isso do nivel rompido
 TIME_EXIT_DAYS = 10          # sugestao de saida: vencimento menos N dias
-IV_TAG_EXPENSIVE_RANK = 75   # Rank acima disso = cara
+IV_TAG_EXPENSIVE_RANK = 50   # Rank acima disso = cara (material de estudo: nao comprar com IV acima de 50)
 SHADOW = os.getenv("SHADOW", "true").lower() == "true"   # registra em segredo sinais das regras B/C de IV
 SHADOW_C_RANK_MAX = 60
 # Conferencia unica: IV/Rank/Pct de um ativo em datas passadas (formato TICKER:AAAA-MM-DD,AAAA-MM-DD). Roda 1x por valor.
