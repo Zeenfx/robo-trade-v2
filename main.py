@@ -355,6 +355,33 @@ def job_dist_iv():
     if messenger.send("\n".join(L)):
         database.set_meta(key, "1")
 
+def job_diag_opcoes():
+    """Checagem unica (so leitura): para cada sinal sem opcao de hoje, por que cada vencimento falha, com dados brutos da serie mais proxima de delta 0,5."""
+    key = "diag_opc:v1"
+    if database.get_meta(key):
+        return
+    hoje = str(now().date())
+    sinais = database.no_option_signals(hoje)
+    if not sinais:
+        return
+    api = Brapi()
+    L = [f"Diagnostico de opcoes ({len(sinais)} sinais sem opcao hoje)", "faixa delta | sem cotacao | spread | liquidez | ok"]
+    for t, d, _ in sinais:
+        try:
+            res = options_selector.diagnose(api, t, d, now().date())
+        except BrapiError as e:
+            L.append(f"{t}: erro {str(e)[:80]}")
+            continue
+        if not res:
+            L.append(f"{t}: sem vencimento mensal na janela")
+        for r in res:
+            L.append(f"{t} {'▲' if d == 'long' else '▼'} {r['exp'][8:10]}/{r['exp'][5:7]}: {r['delta']}/{r['n']} | {r['sem_cot']} | {r['spread']} | {r['liq']} | {r['ok']}")
+            if r["ex"]:
+                L.append("   " + r["ex"])
+    txt = "\n".join(L)
+    if messenger.send(txt):
+        database.set_meta(key, "1")
+
 def _once(name, fn):
     """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
     def run():
@@ -486,6 +513,7 @@ def serve():
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
+    s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
     s.add_job(job_dist_iv, "date", run_date=now() + timedelta(seconds=90), id="dist_iv")
     if config.CHECK_IV:
         s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")

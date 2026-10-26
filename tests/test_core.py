@@ -508,3 +508,24 @@ def test_aviso_ultimo_negocio_no_alerta():
     opt = dict(symbol="AAA", strike=10.0, expiration="2026-12-18", ask=0.8, bid=0.8, max_loss_per_lot=80.0, stop_premium=0.4, delta=0.5, dte=50)
     assert "Último negócio" not in messenger.alert_msg(s, iv, opt, "")
     assert "Último negócio, sem compra/venda" in messenger.alert_msg(s, iv, dict(opt, last_only=True), "")
+
+
+def test_diagnose_e_job_diag(monkeypatch):
+    import main
+    class Api:
+        def expirations(self, u, include_expired=False): return ["2026-11-20", "2026-11-27"]
+        def analytics(self, u, e, date=None, side=None):
+            return "d", [dict(symbol="A1", strike=10, delta=-0.5), dict(symbol="A2", strike=11, delta=-0.45), dict(symbol="A3", strike=12, delta=-0.1)]
+        def chain(self, u, e, side=None):
+            return "d", [dict(symbol="A1", bid=0, ask=0, close=0, volume=0, openInterest=0), dict(symbol="A2", bid=0.5, ask=0.52, close=0.5, volume=100, openInterest=900), dict(symbol="A3", bid=0, ask=0, close=0.1)]
+    r = options_selector.diagnose(Api(), "XX3", "short", date(2026, 10, 26))
+    assert len(r) == 1 and r[0]["exp"] == "2026-11-20" and r[0]["delta"] == 2 and r[0]["sem_cot"] == 1 and r[0]["ok"] == 1 and "A1" in r[0]["ex"]
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    monkeypatch.setattr(database, "get_meta", lambda k: None)
+    monkeypatch.setattr(database, "set_meta", lambda k, v: None)
+    monkeypatch.setattr(database, "no_option_signals", lambda d: [("XX3", "short", "")])
+    monkeypatch.setattr(main, "Brapi", lambda: Api())
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 19, 0, tzinfo=TZ))
+    main.job_diag_opcoes()
+    assert len(sent) == 1 and "XX3 ▼ 20/11: 2/3 | 1 | 0 | 0 | 1" in sent[0]
