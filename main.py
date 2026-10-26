@@ -337,6 +337,12 @@ def job_summary():
         L.append("⚠️ Dados incompletos: o robô pode ter perdido sinais.")
     elif database.count_alerts(hoje) == 0:
         L.append("Sem rompimento confirmado hoje.")
+    try:
+        near = _near_list(Brapi())
+        if near:
+            L += ["Perto de romper amanhã:"] + near
+    except Exception as e:
+        log.warning("Lista de proximos rompimentos falhou: %s", e)
     if messenger.send("\n".join(L)):
         database.set_meta("summary_last", hoje)
 
@@ -352,6 +358,42 @@ def job_boot_status():
     resumo = database.get_meta("summary_last") or "nenhum ainda"
     if messenger.send(f"Robô atualizado (versão {ver})\nÚltimo ciclo gravado: {ult}\nÚltimo resumo diário enviado: {resumo}"):
         database.set_meta(key, "1")
+
+def _near_list(api, today=None):
+    """Ativos do universo a menos de 1% do nivel de 20 dias (busca candles diarios)."""
+    import report
+    items = []
+    for t in config.UNIVERSE:
+        try:
+            r = report.near_breakout(t, api.history(t, "3mo", "1d"), today, TZ)
+        except BrapiError:
+            continue
+        if r:
+            items.append((t, r))
+    return report.near_lines(items)
+
+def job_morning():
+    """09:30: robo vivo, estado da IV do mercado e ativos perto de romper."""
+    import report
+    d = database.latest_status_date()
+    rows = database.latest_status(d) if d else []
+    cont, baratos = report.iv_counts(rows)
+    L = [f"Bom dia · {now().strftime('%d/%m')}", f"Robô ativo · {len(config.UNIVERSE)} ativos",
+         f"IV do mercado: {cont['cara']} cara · {cont['média']} média · {cont['barata']} barata"]
+    near = _near_list(Brapi(), now().date())
+    L += (["Perto de romper (a menos de 1%):"] + near) if near else ["Nenhum ativo perto de romper."]
+    if baratos:
+        L.append("IV mais barata: " + ", ".join(baratos))
+    messenger.send("\n".join(L))
+
+def job_heartbeat():
+    """13:00: prova de vida (ciclos feitos, cobertura de dados e alertas do dia)."""
+    hoje = str(now().date())
+    st = database.stats_for(hoje)
+    if not st:
+        messenger.send(f"{now().strftime('%H:%M')} · ⚠️ robô sem ciclos hoje. Verifique o Railway.")
+        return
+    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}\nAlertas hoje: {database.count_alerts(hoje)}")
 
 def job_status():
     d, wl = screener.watchlist()
@@ -374,6 +416,8 @@ def serve():
     s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
+    s.add_job(job_morning, "cron", day_of_week=wk, hour=9, minute=30, id="morning", misfire_grace_time=1800, coalesce=True)
+    s.add_job(job_heartbeat, "cron", day_of_week=wk, hour=13, minute=0, id="heartbeat", misfire_grace_time=1800, coalesce=True)
     s.add_job(job_summary, "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_boot_status, "date", run_date=now() + timedelta(seconds=50), id="boot_status")
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
@@ -390,7 +434,7 @@ def serve():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
-    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "summary": job_summary, "check-iv": job_check_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
+    jobs = {"serve": serve, "pre": job_pre, "intraday": job_intraday, "eod": job_eod, "status": job_status, "debug-iv": job_debug_iv, "backtest-iv": job_backtest_iv, "summary": job_summary, "morning": job_morning, "heartbeat": job_heartbeat, "check-iv": job_check_iv, "shadow-report": job_shadow_report, "tick": job_tick, "telegram-test": job_telegram_test, "bootstrap": job_bootstrap,
             "backfill": lambda: job_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 365)}
     if cmd not in jobs:
         sys.exit(f"Comando invalido: {cmd}. Use: {', '.join(jobs)}")

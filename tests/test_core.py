@@ -370,3 +370,39 @@ def test_boot_status_once_per_version(monkeypatch, tmp_path):
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "9999999zzz")
     main.job_boot_status()
     assert len(sent) == 2
+
+
+def test_near_breakout_and_lines():
+    import report
+    from datetime import datetime
+    def candles(highs, lows, closes):
+        return [dict(date=int(datetime(2026, 9, 1 + i, 12, tzinfo=TZ).timestamp()), high=h, low=l, close=c) for i, (h, l, c) in enumerate(zip(highs, lows, closes))]
+    n = config.BREAKOUT_LOOKBACK
+    up = candles([60] * n, [50] * n, [55] * (n - 1) + [59.6])         # fecha a 0,7% da maxima
+    assert report.near_breakout("X", up)[0] == "up"
+    down = candles([60] * n, [50] * n, [55] * (n - 1) + [50.3])       # a 0,6% da minima
+    assert report.near_breakout("Y", down)[0] == "down"
+    mid = candles([60] * n, [50] * n, [55] * n)
+    assert report.near_breakout("Z", mid) is None
+    lines = report.near_lines([("X", report.near_breakout("X", up)), ("Y", report.near_breakout("Y", down))])
+    assert lines[0].startswith("▼ Y") and "máx 60,00" in lines[1] and "fechou 59,60" in lines[1]
+    cont, baratos = report.iv_counts([dict(ticker="A", iv_rank=10, iv_pct=10), dict(ticker="B", iv_rank=99, iv_pct=99), dict(ticker="C", iv_rank=None, iv_pct=None)])
+    assert cont == {"cara": 1, "média": 0, "barata": 1} and baratos == ["A", "B"]
+
+
+def test_morning_and_heartbeat(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "m.db"))
+    monkeypatch.setattr(config, "UNIVERSE", ["AAA3"])
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 9, 30, tzinfo=TZ))
+    monkeypatch.setattr(main, "Brapi", lambda: type("A", (), {"history": lambda self, *a, **k: []})())
+    database.save_iv_status("2026-10-23", "AAA3", 0.3, 20.0, 25.0, True)
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
+    main.job_morning()
+    assert "Bom dia · 26/10" in sent[0] and "0 cara · 0 média · 1 barata" in sent[0] and "Nenhum ativo perto de romper." in sent[0]
+    main.job_heartbeat()
+    assert "sem ciclos hoje" in sent[1]
+    database.save_stats("2026-10-26T12:45:00", "2026-10-26", 30, 30, 0, 0, 0)
+    main.job_heartbeat()
+    assert "Ciclos: 1" in sent[2] and "30/30" in sent[2] and "Alertas hoje: 0" in sent[2]
