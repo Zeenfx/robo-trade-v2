@@ -50,7 +50,11 @@ def alert_msg(sig, iv, opt, opt_err, today=None):
     verbo = "Rompeu" if long_ else "Perdeu"
     ivw = _iv_word(iv["iv_rank"], iv["iv_pct"])
     L = [f"{'🟢' if long_ else '🔴'} <b>{'CALL' if long_ else 'PUT'} · {sig.ticker}</b>",
-         f"{verbo} {fmt(sig.level)} · preço {fmt(sig.price)}" + (f" (das {sig.asof})" if getattr(sig, "asof", None) else ""), ""]
+         f"{verbo} {fmt(sig.level)} · preço {fmt(sig.price)}" + (f" (das {sig.asof})" if getattr(sig, "asof", None) else "")]
+    ext = abs(sig.price - sig.level) / sig.level * 100 if sig.level else 0
+    if ext > config.LATE_PCT:
+        L.append(f"⚠️ Já andou {fmt(ext,1)}% além do nível")
+    L.append("")
     if opt:
         L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",
               f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])}",

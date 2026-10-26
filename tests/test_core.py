@@ -434,3 +434,12 @@ def test_selector_explains_why_no_option():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     opt, why = options_selector.select(Api(), s, date(2026, 10, 8))
     assert opt is None and why.startswith("spread alto (") and "séries)" in why
+
+
+def test_late_alert_warning():
+    import messenger, analyzer
+    iv = dict(iv=0.3, iv_rank=50, iv_pct=60)
+    late = analyzer.Signal("ITUB4", "short", 40.20, 41.51, 42.32, 35.97, 0.8, 2.0, "baixa", "", "2 closes", "medio")
+    assert "⚠️ Já andou 3,2% além do nível" in messenger.alert_msg(late, iv, None, "x")
+    ok = analyzer.Signal("ITUB4", "short", 41.20, 41.51, 42.32, 38.0, 0.8, 2.0, "baixa", "", "2 closes", "medio")
+    assert "Já andou" not in messenger.alert_msg(ok, iv, None, "x")
