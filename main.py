@@ -309,6 +309,40 @@ def job_check_iv():
     if messenger.send("\n".join(lines)):
         database.set_meta("check:" + spec, "1")
 
+def job_dist_iv():
+    """Checagem unica: quanto o corte de 'IV cara' em Rank 50 (vs 75) muda as etiquetas. Hoje e no historico dos 30 ativos."""
+    key = "dist_iv:v1"
+    if database.get_meta(key):
+        return
+    hoje = {"barata": 0, "m50": 0, "c50": 0, "m75": 0, "c75": 0}
+    d = database.latest_status_date()
+    rows = database.latest_status(d) if d else []
+    n_hoje = 0
+    for r in rows:
+        if r.get("iv_rank") is None:
+            continue
+        n_hoje += 1
+        if iv_filter.iv_favoravel(r["iv_rank"], r["iv_pct"]):
+            hoje["barata"] += 1
+        elif r["iv_rank"] > 50: hoje["c50"] += 1
+        else: hoje["m50"] += 1
+        if not iv_filter.iv_favoravel(r["iv_rank"], r["iv_pct"]):
+            hoje["c75" if r["iv_rank"] > 75 else "m75"] += 1
+    tot = a50 = a75 = 0
+    for t in config.UNIVERSE:
+        ser = database.iv_series(t, 400)
+        for i in range(config.IV_MIN_HISTORY, len(ser)):
+            w = ser[max(0, i - config.IV_WINDOW + 1): i + 1]
+            rk = iv_filter.iv_rank(w, ser[i])
+            tot += 1; a50 += rk > 50; a75 += rk > 75
+    L = ["Checagem IV: corte de 'cara' em Rank 50 (novo) vs 75 (antigo)"]
+    if n_hoje:
+        L.append(f"Hoje ({d[8:10]}/{d[5:7]}, {n_hoje} ativos): ✅ barata {hoje['barata']} | ⚠️ média {hoje['m50']} (antes {hoje['m75']}) | 🔥 cara {hoje['c50']} (antes {hoje['c75']})")
+    if tot:
+        L.append(f"Histórico ({tot} ativo-dias): Rank acima de 50 em {a50/tot*100:.0f}% | acima de 75 em {a75/tot*100:.0f}%")
+    if messenger.send("\n".join(L)):
+        database.set_meta(key, "1")
+
 def _once(name, fn):
     """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
     def run():
@@ -440,6 +474,7 @@ def serve():
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
+    s.add_job(job_dist_iv, "date", run_date=now() + timedelta(seconds=90), id="dist_iv")
     if config.CHECK_IV:
         s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")
     if os.getenv("BACKTEST_IV"):

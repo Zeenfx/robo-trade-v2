@@ -466,3 +466,17 @@ def test_fallback_ultimo_preco_e_segundo_vencimento():
             return "2026-10-07", [dict(symbol="N1", bid=0, ask=0, close=0.80, openInterest=1000, volume=200)]
     opt, err = options_selector.select(Api(), s, date(2026, 10, 26))
     assert opt and opt["symbol"] == "N1" and opt["last_only"] and opt["ask"] == 0.80
+
+
+def test_job_dist_iv_envia_uma_vez(monkeypatch):
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    monkeypatch.setattr(database, "get_meta", lambda k: None)
+    monkeypatch.setattr(database, "set_meta", lambda k, v: None)
+    monkeypatch.setattr(database, "latest_status_date", lambda: "2026-10-26")
+    monkeypatch.setattr(database, "latest_status", lambda d: [dict(iv_rank=10, iv_pct=10), dict(iv_rank=60, iv_pct=70), dict(iv_rank=90, iv_pct=95)])
+    monkeypatch.setattr(config, "UNIVERSE", ["AAA"])
+    monkeypatch.setattr(database, "iv_series", lambda t, w: [0.2 + (i % 10) * 0.01 for i in range(200)])
+    import main
+    main.job_dist_iv()
+    assert len(sent) == 1 and "barata 1" in sent[0] and "cara 2 (antes 1)" in sent[0] and "Histórico" in sent[0]
