@@ -95,7 +95,7 @@ def job_intraday():
             messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date()))
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
-        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt})
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
@@ -351,7 +351,7 @@ def job_summary():
         L.append("Sem rompimento confirmado hoje.")
     sem = database.no_option_signals(hoje)
     if sem:
-        L.append("Sinais sem opção: " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in sem))
+        L.append("Sinais sem opção: " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" + (f" ({why.lower()})" if why else "") for t, d, why in sem))
     try:
         near = _near_list(Brapi())
         if near:

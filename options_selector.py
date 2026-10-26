@@ -1,13 +1,25 @@
 """Escolhe a opcao (call p/ long, put p/ short) com delta, liquidez e spread adequados."""
 from datetime import datetime
 import config
-from iv_filter import pick_expiration, is_weekly_symbol
+from iv_filter import pick_expiration, is_weekly_symbol, is_monthly
 
 def select(api, signal, today):
+    """Tenta cada vencimento mensal da janela, do mais proximo de 45 DTE para o mais distante; o primeiro com opcao valida vence."""
     exps = api.expirations(signal.ticker)
-    pick = pick_expiration(exps, today, target=45, lo=config.OPT_MIN_DTE, hi=config.OPT_MAX_DTE)
-    if not pick: return None, "sem vencimento mensal entre %d e %d DTE" % (config.OPT_MIN_DTE, config.OPT_MAX_DTE)
-    exp, dte = pick
+    cands = []
+    for e in exps:
+        dte = (datetime.strptime(e, "%Y-%m-%d").date() - today).days
+        if config.OPT_MIN_DTE <= dte <= config.OPT_MAX_DTE and is_monthly(e):
+            cands.append((e, dte))
+    if not cands: return None, "sem vencimento mensal entre %d e %d DTE" % (config.OPT_MIN_DTE, config.OPT_MAX_DTE)
+    first_err = ""
+    for exp, dte in sorted(cands, key=lambda c: abs(c[1] - 45)):
+        best, err = _select_exp(api, signal, exp, dte)
+        if best: return best, ""
+        first_err = first_err or err
+    return None, first_err
+
+def _select_exp(api, signal, exp, dte):
     side = "call" if signal.direction == "long" else "put"
     d_an, an = api.analytics(signal.ticker, exp, side=side)
     d_ch, ch = api.chain(signal.ticker, exp, side=side)
@@ -23,8 +35,13 @@ def select(api, signal, today):
             no_delta += 1
             continue
         bid, ask = s.get("bid") or 0, s.get("ask") or 0
+        ultimo = False
         if bid <= 0 or ask <= 0 or ask < bid:
-            falhas["sem cotação"] += 1; continue
+            # sem compra/venda no fechamento: usa o ultimo preco negociado; volume e interesse aberto abaixo seguem valendo
+            px = s.get("close") or 0
+            if px <= 0:
+                falhas["sem cotação"] += 1; continue
+            bid = ask = px; ultimo = True
         mid = (bid + ask) / 2
         spread = (ask - bid) / mid * 100
         if spread > config.MAX_SPREAD_PCT:
@@ -34,7 +51,7 @@ def select(api, signal, today):
         cand = dict(symbol=a["symbol"], side=side, strike=a["strike"], expiration=exp, dte=dte, delta=a["delta"],
                     iv=a.get("impliedVolatility"), bid=bid, ask=ask, mid=mid, spread_pct=spread,
                     oi=s.get("openInterest"), volume=s.get("volume"), lot=max(a.get("allocationRoundLot") or 0, config.OPTION_LOT),   # lote padrao B3 = 100; a brapi pode informar 1
-                    ref_date=d_ch)
+                    ref_date=d_ch, last_only=ultimo)
         if best is None or abs(dl - 0.5) < abs(abs(best["delta"]) - 0.5): best = cand
     if best is None:
         n = sum(falhas.values())

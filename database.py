@@ -158,7 +158,12 @@ def count_alerts(date, only_sent=False):
     return n - len(no_option_signals(date)) if only_sent else n
 
 def no_option_signals(date):
-    """[(ticker, direcao)] dos sinais do dia sem opcao liquida (nao enviados)."""
+    """[(ticker, direcao, motivo)] dos sinais do dia sem opcao liquida (nao enviados)."""
     with conn() as c_:
         rows = c_.execute("SELECT ticker, direction, payload FROM alerts WHERE date=? ORDER BY ts", (date,)).fetchall()
-    return [(r["ticker"], r["direction"]) for r in rows if not json.loads(r["payload"]).get("option")]
+    out = []
+    for r in rows:
+        p = json.loads(r["payload"])
+        if not p.get("option"):
+            out.append((r["ticker"], r["direction"], p.get("reason") or ""))
+    return out

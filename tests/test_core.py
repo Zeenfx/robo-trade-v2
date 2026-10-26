@@ -448,5 +448,21 @@ def test_sinais_sem_opcao_ficam_fora_do_envio():
     d = "2099-01-05"
     database.save_alert(d, "ITUB4", "short", d + "T11:00", {"signal": {}, "option": None})
     database.save_alert(d, "VALE3", "long", d + "T11:05", {"signal": {}, "option": {"symbol": "X"}})
-    assert database.no_option_signals(d) == [("ITUB4", "short")]
+    assert database.no_option_signals(d) == [("ITUB4", "short", "")]
     assert database.count_alerts(d) == 2 and database.count_alerts(d, True) == 1
+
+
+def test_fallback_ultimo_preco_e_segundo_vencimento():
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [x for x in _daily() if datetime.fromtimestamp(x["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    class Api:
+        def expirations(self, u, include_expired=False): return ["2026-11-20", "2026-12-18"]
+        def analytics(self, u, e, date=None, side=None):
+            return "2026-10-07", [dict(symbol="N1" if e == "2026-11-20" else "D1", strike=10, delta=0.5, impliedVolatility=0.3, allocationRoundLot=100)]
+        def chain(self, u, e, side=None):
+            if e == "2026-12-18":   # primeiro vencimento tentado (mais perto de 45 DTE): sem nada negociavel
+                return "2026-10-07", [dict(symbol="D1", bid=0, ask=0, close=0, openInterest=1000, volume=200)]
+            return "2026-10-07", [dict(symbol="N1", bid=0, ask=0, close=0.80, openInterest=1000, volume=200)]
+    opt, err = options_selector.select(Api(), s, date(2026, 10, 26))
+    assert opt and opt["symbol"] == "N1" and opt["last_only"] and opt["ask"] == 0.80
