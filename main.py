@@ -362,15 +362,18 @@ def job_diag_opcoes():
         return
     hoje = str(now().date())
     sinais = database.no_option_signals(hoje)
+    log.info("Diagnostico de opcoes: %d sinais sem opcao em %s", len(sinais), hoje)
     if not sinais:
+        messenger.send(f"Diagnostico de opcoes: nenhum sinal sem opcao registrado em {hoje[8:10]}/{hoje[5:7]}.")
         return
     api = Brapi()
     L = [f"Diagnostico de opcoes ({len(sinais)} sinais sem opcao hoje)", "faixa delta | sem cotacao | spread | liquidez | ok"]
     for t, d, _ in sinais:
         try:
             res = options_selector.diagnose(api, t, d, now().date())
-        except BrapiError as e:
-            L.append(f"{t}: erro {str(e)[:80]}")
+        except Exception as e:   # nunca falhar em silencio: o erro aparece na mensagem
+            log.exception("Diagnostico de opcoes %s falhou", t)
+            L.append(f"{t}: erro {type(e).__name__} {str(e)[:80]}")
             continue
         if not res:
             L.append(f"{t}: sem vencimento mensal na janela")
