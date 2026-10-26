@@ -44,7 +44,7 @@ def _iv_word(rank, pct):
     import iv_filter
     return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
 
-def alert_msg(sig, iv, opt, opt_err, today=None):
+def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
     """Mensagem unica e enxuta para celular: direcao (cor), opcao, alvo/stop e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
     verbo = "Rompeu" if long_ else "Perdeu"
@@ -54,6 +54,8 @@ def alert_msg(sig, iv, opt, opt_err, today=None):
     ext = abs(sig.price - sig.level) / sig.level * 100 if sig.level else 0
     if ext > config.LATE_PCT:
         L.append(f"⚠️ Já andou {fmt(ext,1)}% além do nível")
+    if ibov is not None and abs(ibov) >= config.IBOV_ALERT_PCT:
+        L.append(f"⚠️ Dia atípico: Ibovespa {fmt(ibov,1)}%. Preço da opção pode estar defasado")
     L.append("")
     if opt:
         L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",

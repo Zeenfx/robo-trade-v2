@@ -480,3 +480,21 @@ def test_job_dist_iv_envia_uma_vez(monkeypatch):
     import main
     main.job_dist_iv()
     assert len(sent) == 1 and "barata 1" in sent[0] and "cara 2 (antes 1)" in sent[0] and "Histórico" in sent[0]
+
+
+def test_aviso_dia_atipico_e_ibov():
+    import main
+    now = datetime(2026, 10, 8, 11, 30, tzinfo=TZ)
+    daily = [d for d in _daily() if datetime.fromtimestamp(d["date"], TZ).date() < now.date()]
+    s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
+    iv = dict(iv=0.3, iv_rank=17.4, iv_pct=14.7)
+    assert "Dia atípico" not in messenger.alert_msg(s, iv, None, "x", None, -2.0)
+    assert "Dia atípico: Ibovespa -15,8%" in messenger.alert_msg(s, iv, None, "x", None, -15.8)
+    ts = lambda d, h: int(datetime(2026, 10, d, h, tzinfo=TZ).timestamp())
+    class Api:
+        def history(self, sym, r, i): return [dict(date=ts(23, 17), close=100.0), dict(date=ts(26, 12), close=85.0)]
+    now = datetime(2026, 10, 26, 11, 0, tzinfo=TZ)
+    assert round(main._ibov_change(Api(), now), 1) == -15.0
+    class Old(Api):
+        def history(self, sym, r, i): return [dict(date=ts(22, 17), close=100.0), dict(date=ts(23, 17), close=99.0)]
+    assert main._ibov_change(Old(), now) is None

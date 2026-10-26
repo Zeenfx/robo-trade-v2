@@ -59,6 +59,17 @@ def job_pre():
     lines.append("Alerta só sai se houver rompimento confirmado.")
     messenger.send("\n".join(lines))
 
+def _ibov_change(api, t0):
+    """Variacao do Ibovespa hoje vs fechamento anterior (%), ou None se nao der para calcular."""
+    try:
+        rows = api.history("^BVSP", "5d", "1d")
+        if len(rows) < 2 or datetime.fromtimestamp(rows[-1]["date"], TZ).date() != t0.date():
+            return None
+        return (rows[-1]["close"] / rows[-2]["close"] - 1) * 100
+    except Exception as e:
+        log.warning("Variacao do Ibovespa indisponivel: %s", e)
+        return None
+
 def job_intraday():
     d, wl = screener.watchlist()
     if not wl: return
@@ -84,6 +95,7 @@ def job_intraday():
         except BrapiError as e:
             erros += 1
             log.error("%s: %s", t, e)
+    ibov = _ibov_change(api, t0) if sigs else None
     for s in screener.rank_signals(sigs):
         iv = wl[s.ticker]
         database.log_signal(t0.isoformat(), s.ticker, s.direction, s.dict())
@@ -92,7 +104,7 @@ def job_intraday():
         except BrapiError as e:
             opt, err = None, str(e)
         if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:05
-            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date()))
+            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov))
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err})
