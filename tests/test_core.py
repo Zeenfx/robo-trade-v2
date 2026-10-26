@@ -356,3 +356,17 @@ def test_daily_summary(monkeypatch, tmp_path):
     database.save_stats("2026-10-23T17:50:00", "2026-10-23", 30, 29, 1, 0, 0)
     main.job_summary()
     assert "Sem rompimento confirmado hoje." in sent[1]
+
+
+def test_boot_status_once_per_version(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "b.db"))
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abcdef1234")
+    database.save_stats("2026-10-23T17:45:00", "2026-10-23", 30, 22, 8, 0, 0)
+    sent = []
+    monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
+    main.job_boot_status(); main.job_boot_status()
+    assert len(sent) == 1 and "abcdef1" in sent[0] and "23/10 17:45 (22/30 com dado)" in sent[0] and "nenhum ainda" in sent[0]
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "9999999zzz")
+    main.job_boot_status()
+    assert len(sent) == 2

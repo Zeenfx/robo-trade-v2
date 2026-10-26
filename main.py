@@ -337,7 +337,21 @@ def job_summary():
         L.append("⚠️ Dados incompletos: o robô pode ter perdido sinais.")
     elif database.count_alerts(hoje) == 0:
         L.append("Sem rompimento confirmado hoje.")
-    messenger.send("\n".join(L))
+    if messenger.send("\n".join(L)):
+        database.set_meta("summary_last", hoje)
+
+def job_boot_status():
+    """Uma mensagem por deploy: versao no ar, ultimo ciclo gravado e ultimo resumo enviado (prova de vida e historico recente)."""
+    ver = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "local")[:7]
+    key = "boot:" + ver
+    if database.get_meta(key):
+        return
+    with database.conn() as c_:
+        r = c_.execute("SELECT ts, analisados, total FROM intraday_stats ORDER BY ts DESC LIMIT 1").fetchone()
+    ult = f"{r['ts'][8:10]}/{r['ts'][5:7]} {r['ts'][11:16]} ({r['analisados']}/{r['total']} com dado)" if r else "nenhum ainda"
+    resumo = database.get_meta("summary_last") or "nenhum ainda"
+    if messenger.send(f"Robô atualizado (versão {ver})\nÚltimo ciclo gravado: {ult}\nÚltimo resumo diário enviado: {resumo}"):
+        database.set_meta(key, "1")
 
 def job_status():
     d, wl = screener.watchlist()
@@ -361,6 +375,7 @@ def serve():
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
     s.add_job(job_summary, "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
+    s.add_job(job_boot_status, "date", run_date=now() + timedelta(seconds=50), id="boot_status")
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
