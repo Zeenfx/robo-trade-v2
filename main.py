@@ -357,17 +357,23 @@ def job_dist_iv():
 
 def job_diag_opcoes():
     """Checagem unica (so leitura): para cada sinal sem opcao de hoje, por que cada vencimento falha, com dados brutos da serie mais proxima de delta 0,5."""
-    key = "diag_opc:v1"
+    key = "diag_opc:v2"
     if database.get_meta(key):
         return
     hoje = str(now().date())
-    sinais = database.no_option_signals(hoje)
+    sinais = []
+    for k in range(0, 6):   # usa o dia mais recente que tenha sinais sem opcao
+        dia = str(now().date() - timedelta(days=k))
+        sinais = database.no_option_signals(dia)
+        if sinais:
+            hoje = dia
+            break
     log.info("Diagnostico de opcoes: %d sinais sem opcao em %s", len(sinais), hoje)
     if not sinais:
         messenger.send(f"Diagnostico de opcoes: nenhum sinal sem opcao registrado em {hoje[8:10]}/{hoje[5:7]}.")
         return
     api = Brapi()
-    L = [f"Diagnostico de opcoes ({len(sinais)} sinais sem opcao hoje)", "faixa delta | sem cotacao | spread | liquidez | ok"]
+    L = [f"Diagnostico de opcoes ({len(sinais)} sinais sem opcao em {hoje[8:10]}/{hoje[5:7]})", "faixa delta | sem cotacao | spread | liquidez | ok"]
     for t, d, _ in sinais:
         try:
             res = options_selector.diagnose(api, t, d, now().date())
