@@ -542,3 +542,16 @@ def test_send_divide_texto_longo(monkeypatch):
     txt = "\n".join(f"linha {i:03d} " + "x" * 80 for i in range(100))
     assert len(txt) > 4096 and messenger.send(txt) is True
     assert len(calls) >= 3 and all(len(c) <= 3800 for c in calls) and "\n".join(calls) == txt
+
+
+def test_alerta_estima_preco_quando_so_ultimo_negocio():
+    from types import SimpleNamespace as N
+    sig = N(direction="short", ticker="USIM5", level=5.75, price=5.72, target=5.32, stop=5.92, asof="15:15")
+    iv = dict(iv=0.3, iv_rank=60, iv_pct=90)
+    opt = dict(symbol="USIMX620", strike=6.2, expiration="2026-12-18", ask=0.6, bid=0.6, max_loss_per_lot=60, stop_premium=0.3,
+               delta=-0.51, dte=52, last_only=True, iv=None, spot_ref=6.15, lot=100)
+    t = messenger.alert_msg(sig, iv, opt, "")
+    assert "Preço estimado" in t and "último negócio foi 0,60" in t and "stop da ação" in t and "cair a 0,30" not in t
+    assert 0.7 <= messenger.estimar_preco(sig, opt) <= 0.95
+    t2 = messenger.alert_msg(sig, iv, dict(opt, spot_ref=None), "")   # sem como estimar: mantem o aviso antigo
+    assert "Último negócio, sem compra/venda" in t2 and "cair a 0,30" in t2

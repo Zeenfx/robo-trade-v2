@@ -59,6 +59,36 @@ def _empate(sig, opt):
     alvo = (sig.target / sig.price - 1) * 100 if long_ else (1 - sig.target / sig.price) * 100
     return need, alvo, alvo >= need
 
+def estimar_preco(sig, opt):
+    """Opcao so com ultimo negocio: reestima o preco com a cotacao atual da acao (Black-Scholes, IV da brapi ou implicita no ultimo negocio).
+    Retorna o preco estimado ou None se nao der para estimar."""
+    from math import log, sqrt, exp
+    from statistics import NormalDist
+    cdf = NormalDist().cdf
+    call = sig.direction == "long"
+    K, T, r, last = opt["strike"], max(opt.get("dte") or 0, 1) / 365.0, config.RISK_FREE, opt["ask"]
+    def bs(S, v):
+        d1 = (log(S / K) + (r + v * v / 2) * T) / (v * sqrt(T)); d2 = d1 - v * sqrt(T)
+        return S * cdf(d1) - K * exp(-r * T) * cdf(d2) if call else K * exp(-r * T) * cdf(-d2) - S * cdf(-d1)
+    try:
+        v = opt.get("iv")
+        if v and v > 3: v = v / 100.0
+        if not v or not (0.05 <= v <= 3):
+            S0 = opt.get("spot_ref")
+            if not S0: return None
+            lo, hi = 0.05, 3.0
+            for _ in range(60):
+                mid = (lo + hi) / 2
+                if bs(S0, mid) > last: hi = mid
+                else: lo = mid
+            v = (lo + hi) / 2
+        est = bs(sig.price, v)
+        intr = max(sig.price - K, 0) if call else max(K - sig.price, 0)
+        est = max(est, intr)
+        return round(est, 2) if est > 0 else None
+    except Exception:
+        return None
+
 def _iv_word(rank, pct):
     import iv_filter
     return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
@@ -76,16 +106,28 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
     if ibov is not None and abs(ibov) >= config.IBOV_ALERT_PCT:
         L.append(f"⚠️ Dia atípico: Ibovespa {fmt(ibov,1)}%. Preço da opção pode estar defasado")
     L.append("")
+    ultimo_px = None
+    if opt and opt.get("last_only"):
+        est = estimar_preco(sig, opt)
+        if est:
+            ultimo_px = opt["ask"]
+            opt = dict(opt, ask=est, bid=est, max_loss_per_lot=est * opt.get("lot", config.OPTION_LOT))
     if opt:
         L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",
               f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])}",
               f"Preço ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)"]
-        if opt.get("last_only"):
+        if ultimo_px:
+            L[-1] = f"Preço estimado ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)"
+            L.append(f"⚠️ Estimativa: último negócio foi {fmt(ultimo_px)}, sem compra/venda. Confira o ask no Profit")
+        elif opt.get("last_only"):
             L.append("⚠️ Último negócio, sem compra/venda. Confira no Profit")
         L.append("")
     L += [f"Alvo: {fmt(sig.target)}", f"Stop: {fmt(sig.stop)}"]
     if opt:
-        L.append(f"Sair se a opção cair a {fmt(opt['stop_premium'])}")
+        if ultimo_px:
+            L.append(f"Sair se a ação {'voltar a' if not long_ else 'cair a'} {fmt(sig.stop)} (stop da ação)")
+        else:
+            L.append(f"Sair se a opção cair a {fmt(opt['stop_premium'])}")
         need, alvo, covers = _empate(sig, opt)
         sinal = "+" if long_ else "-"
         bom_iv = ivw != "cara"

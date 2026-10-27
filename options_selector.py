@@ -51,7 +51,7 @@ def _select_exp(api, signal, exp, dte):
         cand = dict(symbol=a["symbol"], side=side, strike=a["strike"], expiration=exp, dte=dte, delta=a["delta"],
                     iv=a.get("impliedVolatility"), bid=bid, ask=ask, mid=mid, spread_pct=spread,
                     oi=s.get("openInterest"), volume=s.get("volume"), lot=max(a.get("allocationRoundLot") or 0, config.OPTION_LOT),   # lote padrao B3 = 100; a brapi pode informar 1
-                    ref_date=d_ch, last_only=ultimo)
+                    ref_date=d_ch, last_only=ultimo, spot_ref=a.get("underlyingPrice"))
         if best is None or abs(dl - 0.5) < abs(abs(best["delta"]) - 0.5): best = cand
     if best is None:
         n = sum(falhas.values())
