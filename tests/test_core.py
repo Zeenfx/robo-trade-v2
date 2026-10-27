@@ -528,7 +528,7 @@ def test_diagnose_e_job_diag(monkeypatch):
     monkeypatch.setattr(main, "Brapi", lambda: Api())
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 19, 0, tzinfo=TZ))
     main.job_diag_opcoes()
-    assert len(sent) == 1 and "XX3 ▼ 20/11: 2/3 | 1 | 0 | 0 | 1" in sent[0]
+    assert len(sent) == 2 and "iniciado" in sent[0] and "XX3 ▼ 20/11: 2/3 | 1 | 0 | 0 | 1" in sent[1]
 
 
 def test_send_divide_texto_longo(monkeypatch):

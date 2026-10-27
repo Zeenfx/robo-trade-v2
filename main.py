@@ -357,7 +357,7 @@ def job_dist_iv():
 
 def job_diag_opcoes():
     """Checagem unica (so leitura): para cada sinal sem opcao de hoje, por que cada vencimento falha, com dados brutos da serie mais proxima de delta 0,5."""
-    key = "diag_opc:v2"
+    key = "diag_opc:v3"
     if database.get_meta(key):
         return
     hoje = str(now().date())
@@ -373,22 +373,29 @@ def job_diag_opcoes():
         messenger.send(f"Diagnostico de opcoes: nenhum sinal sem opcao registrado em {hoje[8:10]}/{hoje[5:7]}.")
         return
     api = Brapi()
-    L = [f"Diagnostico de opcoes ({len(sinais)} sinais sem opcao em {hoje[8:10]}/{hoje[5:7]})", "faixa delta | sem cotacao | spread | liquidez | ok"]
+    messenger.send(f"Diagnostico de opcoes: iniciado ({len(sinais)} sinais de {hoje[8:10]}/{hoje[5:7]}). Resultados chegam em blocos.")
+    L = ["faixa delta | sem cotacao | spread | liquidez | ok"]
+    enviado = True
     for t, d, _ in sinais:
         try:
             res = options_selector.diagnose(api, t, d, now().date())
         except Exception as e:   # nunca falhar em silencio: o erro aparece na mensagem
             log.exception("Diagnostico de opcoes %s falhou", t)
             L.append(f"{t}: erro {type(e).__name__} {str(e)[:80]}")
-            continue
-        if not res:
+            res = None
+        if res is not None and not res:
             L.append(f"{t}: sem vencimento mensal na janela")
-        for r in res:
+        for r in (res or []):
             L.append(f"{t} {'▲' if d == 'long' else '▼'} {r['exp'][8:10]}/{r['exp'][5:7]}: {r['delta']}/{r['n']} | {r['sem_cot']} | {r['spread']} | {r['liq']} | {r['ok']}")
             if r["ex"]:
                 L.append("   " + r["ex"])
-    txt = "\n".join(L)
-    if messenger.send(txt):
+        if len(L) >= 12:
+            enviado = messenger.send("\n".join(L)) and enviado
+            L = []
+        log.info("Diagnostico de opcoes: %s concluido", t)
+    if L:
+        enviado = messenger.send("\n".join(L)) and enviado
+    if enviado:
         database.set_meta(key, "1")
 
 def _once(name, fn):
