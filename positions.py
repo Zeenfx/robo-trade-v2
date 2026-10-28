@@ -200,23 +200,35 @@ HELP = ("Use: comprei TICKER QTD a PRECO (ex.: comprei CSAN3 500 a 0,44; opciona
         "vendi TICKER [QTD] [a PRECO] · posicoes")
 
 
+def _ticker_de(ident):
+    """Aceita o ticker (GGBR4) ou o codigo da opcao (GGBRX251); para a opcao, acha o ticker no ultimo alerta que a trouxe."""
+    ident = ident.upper()
+    if not re.match(r"^[A-Z]{4}[A-X]\d{2,3}$", ident):
+        return ident
+    with database.conn() as c:
+        for r in c.execute("SELECT ticker, payload FROM alerts ORDER BY ts DESC LIMIT 200").fetchall():
+            if ((json.loads(r["payload"]).get("option") or {}).get("symbol") or "").upper() == ident:
+                return r["ticker"]
+    return ident
+
+
 def handle(text, today, api=None):
     t = (text or "").strip().lower().replace("ç", "c").replace("õ", "o")
     if not t:
         return None
     w = t.split()
     try:
-        if w[0] == "comprei":
-            m = re.match(r"comprei\s+([a-z0-9]{4,6})\s+(\d+)\s+(?:a\s+)?([\d.,]+)(?:\s+stop\s+([\d.,]+))?$", t)
+        if w[0] in ("comprei", "compre", "comprado", "comprou"):
+            m = re.match(r"\w+\s+([a-z0-9]{4,8})\s+(\d+)\s+(?:a\s+)?([\d.,]+)(?:\s+(?:stop|sair)\s+([\d.,]+))?$", t)
             if not m:
                 return HELP
-            msg, _ = open_position(m.group(1), int(m.group(2)), num(m.group(3)), today, stop=num(m.group(4)) if m.group(4) else None)
+            msg, _ = open_position(_ticker_de(m.group(1)), int(m.group(2)), num(m.group(3)), today, stop=num(m.group(4)) if m.group(4) else None)
             return msg
         if w[0] == "vendi":
-            m = re.match(r"vendi\s+([a-z0-9]{4,6})(?:\s+(\d+))?(?:\s+(?:a\s+)?([\d.,]+))?$", t)
+            m = re.match(r"vendi\s+([a-z0-9]{4,8})(?:\s+(\d+))?(?:\s+(?:a\s+)?([\d.,]+))?$", t)
             if not m:
                 return HELP
-            return close_position(m.group(1), int(m.group(2)) if m.group(2) else None, num(m.group(3)) if m.group(3) else None)
+            return close_position(_ticker_de(m.group(1)), int(m.group(2)) if m.group(2) else None, num(m.group(3)) if m.group(3) else None)
         if w[0] in ("posicoes", "posicao"):
             return listar(api, today)
     except Exception as e:

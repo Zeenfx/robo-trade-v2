@@ -584,6 +584,9 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     assert positions.handle("bom dia", today) is None
     assert "Use:" in positions.handle("comprei xx", today)
     assert "Não achei alerta" in positions.handle("comprei ZZZZ3 10 a 1", today)
+    database.save_alert("2026-10-28", "GGBR4", "short", "2026-10-28T12:30:00", {"signal": dict(ticker="GGBR4", direction="short", price=23.79, level=24.0, stop=24.53, target=22.21), "option": dict(symbol="GGBRX251", strike=24.87, expiration="2026-12-18", dte=51), "reason": ""})
+    r2 = positions.handle("Compre ggbrx251 300 1,63", today)
+    assert "Posição registrada: 300 GGBRX251 a 1,63" in r2
 
 
 def test_posicao_prazo_e_seed(monkeypatch, tmp_path):
