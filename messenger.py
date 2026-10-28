@@ -118,7 +118,7 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
     stop = round(sig.price + 0.5 * (sig.stop - sig.price), 2)          # mesmo stop que o acompanhamento de posicao usa
     L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {_dm(opt['expiration'])}", "",
           f"Compra: até ~{fmt(teto)}{aviso}" if aviso else f"Compra: até {fmt(teto)}",
-          f"Alvo: ação a {fmt(sig.target)}", f"Stop: ação a {fmt(stop)}"]
+          f"Alvo: ação a {fmt(sig.target)}", f"Sair se: ação {'abaixo de' if long_ else 'acima de'} {fmt(stop)}"]
     if today:
         import positions
         L.append(f"Prazo: {positions.add_pregoes(today, config.TIME_EXIT_DAYS).strftime('%d/%m')}")

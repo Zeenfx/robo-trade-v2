@@ -96,7 +96,7 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
     dl = datetime.strptime(deadline, "%Y-%m-%d").strftime("%d/%m")
     return (f"✅ Posição registrada: {qty} {option['symbol']} a {fmt(price)} (R$ {fmt(qty * price, 0)}).\n"
             f"Vou avisar quando {ticker}:\n"
-            f"• chegar ao stop {fmt(stop)} (sair)\n"
+            f"• passar de {fmt(stop)} (sair)\n"
             f"• chegar a {fmt(partial)} (realizar metade)\n"
             f"• chegar ao alvo {fmt(target)}\n"
             f"• e no prazo, {dl} (10 pregões)."), pid
@@ -149,7 +149,7 @@ def listar(api, today):
             est = est_option(p, px, today)
             pct = (est / p["entry"] - 1) * 100
             L.append(f"   ação {fmt(px)} · opção ~{fmt(est)} ({'+' if pct >= 0 else '−'}{fmt(abs(pct), 0)}%, {'+' if est >= p['entry'] else '−'}R$ {fmt(abs(est - p['entry']) * p['qty'], 0)}) estimado")
-        L.append(f"   stop {fmt(p['stop'])} · metade {fmt(p['partial'])} · alvo {fmt(p['target'])} · prazo {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}")
+        L.append(f"   sair se {'acima' if p['direction']=='short' else 'abaixo'} de {fmt(p['stop'])} · metade {fmt(p['partial'])} · alvo {fmt(p['target'])} · prazo {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}")
     return "\n".join(L)
 
 
@@ -178,7 +178,7 @@ def check(api, now_dt):
         msgs = []
         if "stop" not in flags and hit(p["stop"]):
             flags.append("stop")
-            msgs.append(f"🛑 STOP: {info}\nA ação tocou o stop {fmt(p['stop'])}. Sair de {p['symbol']} ({p['qty']}). Confira o bid no Profit.")
+            msgs.append(f"🛑 SAIR: {info}\nA ação {'subiu' if short else 'caiu'} até {fmt(p['stop'])}. Sair de {p['symbol']} ({p['qty']}). Confira o bid no Profit.")
         elif "alvo" not in flags and reach(p["target"]):
             flags += ["alvo", "parcial"]
             msgs.append(f"🎯 ALVO: {info}\nA ação chegou ao alvo {fmt(p['target'])}. Realizar o restante de {p['symbol']} ({p['qty']}).")

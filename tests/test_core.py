@@ -72,7 +72,7 @@ def test_option_selection_liquidity():
     opt, err = options_selector.select(FakeApi(), s, date(2026, 10, 8))
     assert opt and opt["symbol"] == "AAA"
     txt = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), opt, err)
-    assert "CALL" in txt and "<code>AAA</code>" in txt and "Alvo:" in txt and "Stop:" in txt and "BOM" in txt
+    assert "CALL" in txt and "<code>AAA</code>" in txt and "Alvo:" in txt and "Sair se:" in txt and "BOM" in txt
     sem = messenger.alert_msg(s, dict(iv=0.3, iv_rank=17.4, iv_pct=14.7), None, "sem liquidez")
     assert "SEM OPÇÃO" in sem
 
@@ -304,14 +304,14 @@ def test_alert_msg_verdicts():
     cara = dict(iv=1.49, iv_rank=100, iv_pct=100)
     txt = messenger.alert_msg(sig, cara, opt, "")
     assert "🟢 <b>CALL · MGLU3</b>" in txt and "❌ RUIM" in txt and "IV cara" in txt
-    assert "Compra: até 2,39" in txt and "<code>MGLUL160</code>" in txt and "Stop: ação a 13,29" in txt and "Alvo: ação a 14,83" in txt and "tesoura" not in txt and "profit" not in txt.lower()
+    assert "Compra: até 2,39" in txt and "<code>MGLUL160</code>" in txt and "Sair se: ação abaixo de 13,29" in txt and "Alvo: ação a 14,83" in txt and "tesoura" not in txt and "profit" not in txt.lower()
     media = dict(iv=0.4, iv_rank=50, iv_pct=60)
     assert "⚠️ NEUTRO" in messenger.alert_msg(sig, media, opt, "")           # alvo nao cobre, IV media
     put = analyzer.Signal("VALE3", "short", 65.70, 66.10, 66.90, 63.40, 1.0, 2.0, "baixa", "", "2 closes", "medio")
     popt = {"symbol": "VALEW660", "strike": 66.0, "ask": 1.90, "bid": 1.85, "dte": 58, "expiration": "2026-12-18",
             "stop_premium": 0.95, "max_loss_per_lot": 190.0}
     t2 = messenger.alert_msg(put, media, popt, "")
-    assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "IV média" in t2 and "Stop: ação a 66,30" in t2
+    assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "IV média" in t2 and "Sair se: ação acima de 66,30" in t2
     t3 = messenger.alert_msg(sig, cara, None, "sem liquidez")
     assert "SEM OPÇÃO" in t3 and "Sem liquidez" in t3 and "Preço" not in t3 and t3.count("\n") < 10
 
@@ -551,7 +551,7 @@ def test_alerta_estima_preco_quando_so_ultimo_negocio():
     opt = dict(symbol="USIMX620", strike=6.2, expiration="2026-12-18", ask=0.6, bid=0.6, max_loss_per_lot=60, stop_premium=0.3,
                delta=-0.51, dte=52, last_only=True, iv=None, spot_ref=6.15, lot=100)
     t = messenger.alert_msg(sig, iv, opt, "")
-    assert "Compra: até ~" in t and "(confira o ask)" in t and "Stop: ação a 5,82" in t and "Prazo: 11/11" not in t
+    assert "Compra: até ~" in t and "(confira o ask)" in t and "Sair se: ação acima de 5,82" in t and "Prazo: 11/11" not in t
     assert 0.7 <= messenger.estimar_preco(sig, opt) <= 0.95
     assert "Prazo: 12/11" in messenger.alert_msg(sig, iv, opt, "", date(2026, 10, 28))
     t2 = messenger.alert_msg(sig, iv, dict(opt, spot_ref=None), "")   # sem como estimar: mantem o aviso antigo
@@ -578,7 +578,7 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     positions.check(Api(2.40), d29); assert sent == []           # no meio do caminho: nada
     positions.check(Api(2.14), d29); assert len(sent) == 1 and "REALIZAR METADE" in sent[0]
     positions.check(Api(2.14), d29); assert len(sent) == 1        # nao repete
-    positions.check(Api(2.66), d29); assert len(sent) == 2 and "STOP" in sent[1]
+    positions.check(Api(2.66), d29); assert len(sent) == 2 and "SAIR" in sent[1]
     assert "Restam 250" in positions.handle("vendi CSAN3 250 a 0,70", today)
     assert "encerrada" in positions.handle("vendi CSAN3 a 0,30", today)
     assert positions.handle("bom dia", today) is None
