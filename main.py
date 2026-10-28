@@ -1,9 +1,9 @@
 import json
 """Orquestracao (EOD as 08:30; no Railway a 1a subida faz o backfill sozinha). Uso: python main.py tick (cron) | serve (sempre ligado) | pre | intraday | eod | backfill [dias] | status | telegram-test"""
 import os, sys, logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-import config, database, messenger, screener, analyzer, options_selector, iv_filter
+import config, database, messenger, screener, analyzer, options_selector, iv_filter, positions
 from data_fetcher import Brapi, BrapiError, BrapiPlanError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -398,6 +398,31 @@ def job_diag_opcoes():
     if enviado:
         database.set_meta(key, "1")
 
+def job_posicoes():
+    """Confere stop/parcial/alvo/prazo das posicoes abertas (so avisa; nunca opera)."""
+    try:
+        positions.check(Brapi(), now())
+    except Exception as e:
+        log.warning("Posicoes: %s", e)
+
+def job_telegram_poll():
+    """Le comandos do Telegram (comprei / vendi / posicoes)."""
+    try:
+        positions.poll(Brapi(), now().date())
+    except Exception as e:
+        log.warning("Leitura do Telegram: %s", e)
+
+def job_seed_csan3():
+    """Unica vez: cadastra a posicao de CSANX285 comprada em 28/10 (500 a 0,44)."""
+    key = "seed:csan3:v1"
+    if database.get_meta(key):
+        return
+    opt = dict(symbol="CSANX285", strike=2.85, expiration="2026-12-18")
+    msg, pid = positions.open_position("CSAN3", 500, 0.44, date(2026, 10, 28), stop=2.65, spot0=2.51, partial=2.15, target=1.91,
+                                       deadline="2026-11-12", option=opt, direction="short")
+    if pid and messenger.send(msg):
+        database.set_meta(key, "1")
+
 def _once(name, fn):
     """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
     def run():
@@ -529,6 +554,9 @@ def serve():
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
+    s.add_job(job_posicoes, "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
+    s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
+    s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
     s.add_job(job_dist_iv, "date", run_date=now() + timedelta(seconds=90), id="dist_iv")
     if config.CHECK_IV:

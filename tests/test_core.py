@@ -555,3 +555,66 @@ def test_alerta_estima_preco_quando_so_ultimo_negocio():
     assert 0.7 <= messenger.estimar_preco(sig, opt) <= 0.95
     t2 = messenger.alert_msg(sig, iv, dict(opt, spot_ref=None), "")   # sem como estimar: mantem o aviso antigo
     assert "Último negócio, sem compra/venda" in t2 and "cair a 0,30" in t2
+
+
+def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
+    import positions, main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "p.db"))
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    today = date(2026, 10, 28)
+    sig = dict(ticker="CSAN3", direction="short", price=2.51, level=2.60, stop=2.81, target=1.91)
+    opt = dict(symbol="CSANX285", strike=2.85, expiration="2026-12-18", dte=51)
+    database.save_alert("2026-10-28", "CSAN3", "short", "2026-10-28T11:00:00", {"signal": sig, "option": opt, "reason": ""})
+    r = positions.handle("comprei CSAN3 500 a 0,44 stop 2,65", today)
+    assert "Posição registrada" in r and "2,65" in r and "2,15" in r and "12/11" in r
+    assert "Nenhuma posição" not in positions.listar(type("A", (), {"history": lambda s, *a: []})(), today)
+    class Api:
+        def __init__(s, px): s.px = px
+        def history(s, t, r, i):
+            return [dict(date=datetime(2026, 10, 29, 11, 0, tzinfo=TZ).timestamp(), close=s.px)]
+    d29 = datetime(2026, 10, 29, 11, 5, tzinfo=TZ)
+    positions.check(Api(2.40), d29); assert sent == []           # no meio do caminho: nada
+    positions.check(Api(2.14), d29); assert len(sent) == 1 and "REALIZAR METADE" in sent[0]
+    positions.check(Api(2.14), d29); assert len(sent) == 1        # nao repete
+    positions.check(Api(2.66), d29); assert len(sent) == 2 and "STOP" in sent[1]
+    assert "Restam 250" in positions.handle("vendi CSAN3 250 a 0,70", today)
+    assert "encerrada" in positions.handle("vendi CSAN3 a 0,30", today)
+    assert positions.handle("bom dia", today) is None
+    assert "Use:" in positions.handle("comprei xx", today)
+    assert "Não achei alerta" in positions.handle("comprei ZZZZ3 10 a 1", today)
+
+
+def test_posicao_prazo_e_seed(monkeypatch, tmp_path):
+    import positions, main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "q.db"))
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    assert str(positions.add_pregoes(date(2026, 10, 28), 10)) == "2026-11-12"
+    main.job_seed_csan3(); main.job_seed_csan3()
+    assert len(sent) == 1 and "CSANX285" in sent[0]
+    class Api:
+        def history(s, t, r, i): return [dict(date=datetime(2026, 11, 12, 11, 0, tzinfo=TZ).timestamp(), close=2.3)]
+    positions.check(Api(), datetime(2026, 11, 12, 11, 5, tzinfo=TZ))
+    assert any("PRAZO" in x for x in sent)
+
+
+def test_poll_telegram(monkeypatch, tmp_path):
+    import positions
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "r.db"))
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "t"); monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "7")
+    resp = []
+    class R:
+        status_code = 200
+        def __init__(s, j): s._j = j
+        def json(s): return s._j
+    monkeypatch.setattr(positions.requests, "get", lambda *a, **k: R({"result": resp.pop(0)}))
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    resp.append([])                                                    # 1a leitura vazia: so marca
+    positions.poll(None, date(2026, 10, 28)); assert database.get_meta("tg_offset") == "0"
+    resp.append([{"update_id": 5, "message": {"chat": {"id": 9}, "text": "posicoes"}},      # outro chat: ignora
+                 {"update_id": 6, "message": {"chat": {"id": 7}, "text": "posicoes"}}])
+    positions.poll(None, date(2026, 10, 28))
+    assert sent == ["Nenhuma posição aberta."] and database.get_meta("tg_offset") == "7"
