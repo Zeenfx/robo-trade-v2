@@ -94,51 +94,36 @@ def _iv_word(rank, pct):
     return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
 
 def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
-    """Mensagem unica e enxuta para celular: direcao (cor), opcao, alvo/stop e veredito (BOM / NEUTRO / RUIM)."""
+    """Mensagem enxuta para celular: opcao, compra ate, alvo e stop (nivel da acao), prazo e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
-    verbo = "Rompeu" if long_ else "Perdeu"
     ivw = _iv_word(iv["iv_rank"], iv["iv_pct"])
-    L = [f"{'🟢' if long_ else '🔴'} <b>{'CALL' if long_ else 'PUT'} · {sig.ticker}</b>",
-         f"{verbo} {fmt(sig.level)} · preço {fmt(sig.price)}" + (f" (das {sig.asof})" if getattr(sig, "asof", None) else "")]
+    L = [f"{'🟢' if long_ else '🔴'} <b>{'CALL' if long_ else 'PUT'} · {sig.ticker}</b>"]
     ext = abs(sig.price - sig.level) / sig.level * 100 if sig.level else 0
     if ext > config.LATE_PCT:
         L.append(f"⚠️ Já andou {fmt(ext,1)}% além do nível")
     if ibov is not None and abs(ibov) >= config.IBOV_ALERT_PCT:
         L.append(f"⚠️ Dia atípico: Ibovespa {fmt(ibov,1)}%. Preço da opção pode estar defasado")
-    L.append("")
-    ultimo_px = None
-    if opt and opt.get("last_only"):
+    if not opt:
+        L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
+        return "\n".join(L)
+    teto, aviso = opt["ask"], ""
+    if opt.get("last_only"):           # so ha o ultimo negocio: usa o topo da estimativa (hipotese mais cara) como teto de compra
         est = estimar_preco(sig, opt)
         if est:
-            ultimo_px = opt["ask"]
-            opt = dict(opt, ask=est, bid=est, max_loss_per_lot=est * opt.get("lot", config.OPTION_LOT))
-    if opt:
-        L += [f"Opção: <code>{opt['symbol']}</code> (toque para copiar)",
-              f"Strike {fmt(opt['strike'])} · vence {_dm(opt['expiration'])}",
-              f"Preço ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)"]
-        if ultimo_px:
-            L[-1] = f"Preço estimado ~{fmt(opt['ask'])} (R$ {fmt(opt['max_loss_per_lot'],0)} por lote)"
-            L.append(f"⚠️ Estimativa: último negócio foi {fmt(ultimo_px)}, sem compra/venda. Confira o ask no Profit")
-        elif opt.get("last_only"):
-            L.append("⚠️ Último negócio, sem compra/venda. Confira no Profit")
-        L.append("")
-    L += [f"Alvo: {fmt(sig.target)}", f"Stop: {fmt(sig.stop)}"]
-    if opt:
-        if ultimo_px:
-            L.append(f"Sair se a ação {'voltar a' if not long_ else 'cair a'} {fmt(sig.stop)} (stop da ação)")
+            teto = round(est * 1.3, 2)
+            opt = dict(opt, ask=teto, bid=teto, max_loss_per_lot=teto * opt.get("lot", config.OPTION_LOT))
+            aviso = " (confira o ask)"
         else:
-            L.append(f"Sair se a opção cair a {fmt(opt['stop_premium'])}")
-        need, alvo, covers = _empate(sig, opt)
-        sinal = "+" if long_ else "-"
-        bom_iv = ivw != "cara"
-        if covers and bom_iv:
-            tag = "✅ BOM"
-        elif not covers and not bom_iv:
-            tag = "❌ RUIM"
-        else:
-            tag = "⚠️ NEUTRO"
-        alvo_txt = f"alvo {sinal}{fmt(abs(alvo),0)}%" if covers else f"alvo só {sinal}{fmt(abs(alvo),0)}%"
-        L += ["", f"<b>{tag}</b>", f"Empate {sinal}{fmt(abs(need),1)}%, {alvo_txt}. IV {ivw}."]
-    else:
-        L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
+            aviso = f" (último negócio, confira o ask)"
+    stop = round(sig.price + 0.5 * (sig.stop - sig.price), 2)          # mesmo stop que o acompanhamento de posicao usa
+    L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {_dm(opt['expiration'])}", "",
+          f"Compra: até ~{fmt(teto)}{aviso}" if aviso else f"Compra: até {fmt(teto)}",
+          f"Alvo: ação a {fmt(sig.target)}", f"Stop: ação a {fmt(stop)}"]
+    if today:
+        import positions
+        L.append(f"Prazo: {positions.add_pregoes(today, config.TIME_EXIT_DAYS).strftime('%d/%m')}")
+    _, _, covers = _empate(sig, opt)
+    bom_iv = ivw != "cara"
+    tag = "✅ BOM" if covers and bom_iv else ("❌ RUIM" if not covers and not bom_iv else "⚠️ NEUTRO")
+    L += ["", f"<b>{tag}</b> · IV {ivw}"]
     return "\n".join(L)

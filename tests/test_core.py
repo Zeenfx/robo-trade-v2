@@ -303,15 +303,15 @@ def test_alert_msg_verdicts():
            "stop_premium": 1.20, "max_loss_per_lot": 239.0}
     cara = dict(iv=1.49, iv_rank=100, iv_pct=100)
     txt = messenger.alert_msg(sig, cara, opt, "")
-    assert "🟢 <b>CALL · MGLU3</b>" in txt and "❌ RUIM" in txt and "alvo só +9%" in txt and "IV cara" in txt
-    assert "R$ 239 por lote" in txt and "<code>MGLUL160</code>" in txt and "Stop: 12,98" in txt and "tesoura" not in txt and "profit" not in txt.lower()
+    assert "🟢 <b>CALL · MGLU3</b>" in txt and "❌ RUIM" in txt and "IV cara" in txt
+    assert "Compra: até 2,39" in txt and "<code>MGLUL160</code>" in txt and "Stop: ação a 13,29" in txt and "Alvo: ação a 14,83" in txt and "tesoura" not in txt and "profit" not in txt.lower()
     media = dict(iv=0.4, iv_rank=50, iv_pct=60)
     assert "⚠️ NEUTRO" in messenger.alert_msg(sig, media, opt, "")           # alvo nao cobre, IV media
     put = analyzer.Signal("VALE3", "short", 65.70, 66.10, 66.90, 63.40, 1.0, 2.0, "baixa", "", "2 closes", "medio")
     popt = {"symbol": "VALEW660", "strike": 66.0, "ask": 1.90, "bid": 1.85, "dte": 58, "expiration": "2026-12-18",
             "stop_premium": 0.95, "max_loss_per_lot": 190.0}
     t2 = messenger.alert_msg(put, media, popt, "")
-    assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "Empate -2,4%, alvo -4%. IV média." in t2
+    assert "🔴 <b>PUT · VALE3</b>" in t2 and "✅ BOM" in t2 and "IV média" in t2 and "Stop: ação a 66,30" in t2
     t3 = messenger.alert_msg(sig, cara, None, "sem liquidez")
     assert "SEM OPÇÃO" in t3 and "Sem liquidez" in t3 and "Preço" not in t3 and t3.count("\n") < 10
 
@@ -413,7 +413,7 @@ def test_alert_shows_price_time_and_heartbeat_lag(monkeypatch, tmp_path):
     sig = analyzer.Signal("MGLU3", "long", 13.60, 13.58, 12.98, 14.83, 0.9, 2.2, "alta", "", "2 closes", "medio")
     sig.asof = "10:45"
     txt = messenger.alert_msg(sig, dict(iv=1.0, iv_rank=50, iv_pct=60), None, "x")
-    assert "preço 13,60 (das 10:45)" in txt
+    assert "SEM OPÇÃO" in txt
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "l.db"))
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 10, 26, 13, 0, tzinfo=TZ))
     database.save_stats("2026-10-26T12:45:00", "2026-10-26", 30, 28, 2, 0, 0)
@@ -506,8 +506,8 @@ def test_aviso_ultimo_negocio_no_alerta():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     iv = dict(iv=0.3, iv_rank=17.4, iv_pct=14.7)
     opt = dict(symbol="AAA", strike=10.0, expiration="2026-12-18", ask=0.8, bid=0.8, max_loss_per_lot=80.0, stop_premium=0.4, delta=0.5, dte=50)
-    assert "Último negócio" not in messenger.alert_msg(s, iv, opt, "")
-    assert "Último negócio, sem compra/venda" in messenger.alert_msg(s, iv, dict(opt, last_only=True), "")
+    assert "confira o ask" not in messenger.alert_msg(s, iv, opt, "")
+    assert "confira o ask" in messenger.alert_msg(s, iv, dict(opt, last_only=True), "")
 
 
 def test_diagnose_e_job_diag(monkeypatch):
@@ -551,10 +551,11 @@ def test_alerta_estima_preco_quando_so_ultimo_negocio():
     opt = dict(symbol="USIMX620", strike=6.2, expiration="2026-12-18", ask=0.6, bid=0.6, max_loss_per_lot=60, stop_premium=0.3,
                delta=-0.51, dte=52, last_only=True, iv=None, spot_ref=6.15, lot=100)
     t = messenger.alert_msg(sig, iv, opt, "")
-    assert "Preço estimado" in t and "último negócio foi 0,60" in t and "stop da ação" in t and "cair a 0,30" not in t
+    assert "Compra: até ~" in t and "(confira o ask)" in t and "Stop: ação a 5,82" in t and "Prazo: 11/11" not in t
     assert 0.7 <= messenger.estimar_preco(sig, opt) <= 0.95
+    assert "Prazo: 12/11" in messenger.alert_msg(sig, iv, opt, "", date(2026, 10, 28))
     t2 = messenger.alert_msg(sig, iv, dict(opt, spot_ref=None), "")   # sem como estimar: mantem o aviso antigo
-    assert "Último negócio, sem compra/venda" in t2 and "cair a 0,30" in t2
+    assert "último negócio, confira o ask" in t2
 
 
 def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
