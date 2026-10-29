@@ -672,3 +672,21 @@ def test_cadastro_de_opcao_propria(monkeypatch, tmp_path):
     assert "Carteira (" not in lst and lst.count("USIMW700") == 1        # uma posicao so (sem duplicata): sem total
     assert "Posição encerrada" in positions.handle("vendi USIMW700 a 1,43", today, api)     # fecha pelo codigo da opcao
     assert "não está entre" in positions.handle("comprei ABCDW100 10 a 1", today, api)
+
+
+def test_cadastro_propria_raiz_com_digito_e_serie_fora_da_brapi(monkeypatch, tmp_path):
+    import positions
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "z.db"))
+    monkeypatch.setattr(config, "UNIVERSE", ["B3SA3", "USIM5"])
+    today = date(2026, 10, 29)
+    class Api:
+        def expirations(self, t, include_expired=False): return ["2026-11-06", "2026-11-19", "2026-12-18"]   # 1o e semanal
+        def chain(self, t, e, side=None):
+            return "d", ([dict(symbol="B3SAL160", strike=16.0)] if e == "2026-12-18" else [])
+        def analytics(self, t, e, date=None, side=None): return "d", []
+        def history(self, t, r, i): return [dict(date=datetime(2026, 10, 29, 9, 45, tzinfo=TZ).timestamp(), close=15.0 if t == "B3SA3" else 5.6)]
+    api = Api()
+    r = positions.handle("comprei B3SAL160 200 a 1,25", today, api)       # raiz com digito (B3SA)
+    assert "Posição registrada: 200 B3SAL160 a 1,25" in r and "Não achei a série" not in r
+    r2 = positions.handle("comprei USIMW700 200 a 0,55", today, api)       # mensal 19/11 sem a serie na brapi
+    assert "Posição registrada: 200 USIMW700" in r2 and "usei strike 7,00" in r2 and "19/11" in r2

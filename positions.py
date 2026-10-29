@@ -234,13 +234,23 @@ def sub_pregoes(d, n):
     return d
 
 
+def _terceira_sexta(ano, mes):
+    d = date(ano, mes, 15)
+    while d.weekday() != 4:
+        d += timedelta(days=1)
+    while str(d) in FERIADOS:
+        d -= timedelta(days=1)
+        while d.weekday() >= 5: d -= timedelta(days=1)
+    return str(d)
+
+
 def cadastrar_propria(api, code, qty, price, today, stop=None, alvo=None, metade=None):
-    """Opcao que nao veio de alerta: descobre ticker, lado, strike e vencimento pelo codigo, na brapi. Retorna mensagem."""
+    """Opcao que nao veio de alerta: descobre ticker, lado, strike e vencimento pelo codigo (brapi; se a serie nao aparecer, pelo proprio codigo)."""
     code = code.upper()
-    m = re.match(r"^([A-Z]{4})([A-X])(\d{1,4})$", code)
+    m = re.match(r"^([A-Z0-9]{4})([A-X])(\d{1,4})$", code)
     if not m or api is None:
         return f"Não reconheci o código {code}. Use o código da opção, ex.: USIMW700."
-    root, letra, _ = m.groups()
+    root, letra, dig = m.groups()
     call = letra <= "L"
     mes = (ord(letra) - ord("A")) % 12 + 1
     side = "call" if call else "put"
@@ -248,39 +258,45 @@ def cadastrar_propria(api, code, qty, price, today, stop=None, alvo=None, metade
     if not tickers:
         return f"{root} não está entre os 30 ativos do robô, então não consigo ler a opção. Posição não registrada."
     t = tickers[0]
-    exps = [e for e in api.expirations(t) if int(e[5:7]) == mes and e >= str(today)]
-    if not exps:
-        return f"Não achei vencimento de {code} na brapi. Posição não registrada."
-    exp = sorted(exps)[0]
-    _, ch = api.chain(t, exp, side=side)
-    serie = next((s for s in ch if (s.get("symbol") or "").upper() == code), None)
-    if not serie:
-        return f"Não achei a série {code} na brapi. Posição não registrada."
-    iv = None
-    try:
-        _, an = api.analytics(t, exp, side=side)
-        a = next((x for x in an if (x.get("symbol") or "").upper() == code), None)
-        iv = a.get("impliedVolatility") if a else None
-        if iv and iv > 3: iv /= 100.0
-    except Exception:
-        pass
     px, _u = _last_price(api, t, today)
-    px = px or serie.get("strike")
-    k = serie["strike"]
+    if not px:
+        return f"Não consegui a cotação de {t} agora. Tente de novo em alguns minutos."
+    exps = [e for e in api.expirations(t) if int(e[5:7]) == mes and e >= str(today)]
+    mensais = [e for e in exps if 15 <= int(e[8:10]) <= 21]
+    exp = sorted(mensais or exps)[0] if (mensais or exps) else None
+    k = iv = None
+    if exp:
+        try:
+            _, ch = api.chain(t, exp, side=side)
+            serie = next((s for s in ch if (s.get("symbol") or "").upper() == code), None)
+            k = serie.get("strike") if serie else None
+            _, an = api.analytics(t, exp, side=side)
+            a_ = next((x for x in an if (x.get("symbol") or "").upper() == code), None)
+            iv = a_.get("impliedVolatility") if a_ else None
+            if iv and iv > 3: iv /= 100.0
+        except Exception as e:
+            log.warning("Cadastro %s: %s", code, e)
+    aviso = ""
+    if not exp:
+        ano = today.year if mes >= today.month else today.year + 1
+        exp = _terceira_sexta(ano, mes)
+    if k is None:     # serie fora da brapi: strike pelo codigo, na escala mais proxima da cotacao
+        k = min((int(dig) / s for s in (1, 10, 100)), key=lambda x: abs(x - px))
+        aviso = "\n⚠️ Não achei a série na brapi: usei strike " + fmt(k) + " (pelo código) e vencimento " + datetime.strptime(exp, "%Y-%m-%d").strftime("%d/%m") + ". O valor atual fica menos preciso."
     sel = stop or round(px * (1.05 if not call else 0.95), 2)
     alvo = alvo or round(px * (0.90 if not call else 1.10), 2)
     metade = metade or round(px + 0.6 * (alvo - px), 2)
     dl = str(sub_pregoes(datetime.strptime(exp, "%Y-%m-%d").date(), 2))
     option = dict(symbol=code, strike=k, expiration=exp)
-    msg, _ = open_position(t, qty, price, today, stop=sel, spot0=px, partial=metade, target=alvo, deadline=dl, option=option,
-                           direction="long" if call else "short", origem="propria", iv=iv)
-    return msg
+    msg, pid = open_position(t, qty, price, today, stop=sel, spot0=px, partial=metade, target=alvo, deadline=dl, option=option,
+                             direction="long" if call else "short", origem="propria", iv=iv or 0.5)
+    return msg + (aviso if pid else "")
 
 
 def _ticker_de(ident):
     """Aceita o ticker (GGBR4) ou o codigo da opcao (GGBRX251); para a opcao, acha o ticker no ultimo alerta que a trouxe."""
     ident = ident.upper()
-    if not re.match(r"^[A-Z]{4}[A-X]\d{2,3}$", ident):
+    if not re.match(r"^[A-Z0-9]{4}[A-X]\d{2,4}$", ident):
         return ident
     with database.conn() as c:
         for r in c.execute("SELECT ticker, payload FROM alerts ORDER BY ts DESC LIMIT 200").fetchall():
@@ -302,7 +318,7 @@ def handle(text, today, api=None):
             nv = {k: num(v) for k, v in re.findall(r"(stop|sair|alvo|metade)\s+([\d.,]+)", m.group(4))}
             ident, qty, price = m.group(1), int(m.group(2)), num(m.group(3))
             stop = nv.get("sair") or nv.get("stop")
-            if re.match(r"^[a-z]{4}[a-x]\d{2,4}$", ident) and _ticker_de(ident) == ident.upper():   # codigo de opcao sem alerta do robo
+            if re.match(r"^[a-z0-9]{4}[a-x]\d{2,4}$", ident) and not re.match(r"^[a-z]{4}\d{1,2}$", ident) and _ticker_de(ident) == ident.upper():   # codigo de opcao sem alerta do robo
                 return cadastrar_propria(api, ident, qty, price, today, stop, nv.get("alvo"), nv.get("metade"))
             msg, _ = open_position(_ticker_de(ident), qty, price, today, stop=stop, target=nv.get("alvo"), partial=nv.get("metade"))
             return msg
