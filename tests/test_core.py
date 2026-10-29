@@ -304,7 +304,7 @@ def test_alert_msg_verdicts():
     cara = dict(iv=1.49, iv_rank=100, iv_pct=100)
     txt = messenger.alert_msg(sig, cara, opt, "")
     assert "🟢 <b>CALL · MGLU3</b>" in txt and "❌ RUIM" in txt and "IV cara" in txt
-    assert "Compra: até 2,39" in txt and "<code>MGLUL160</code>" in txt and "Sair se: ação abaixo de 13,29" in txt and "Alvo: ação a 14,83" in txt and "tesoura" not in txt and "profit" not in txt.lower()
+    assert "Compra: até ~2,39 (preço de ontem, confira o ask)" in txt and "<code>MGLUL160</code>" in txt and "Sair se: ação abaixo de 13,29" in txt and "Alvo: ação a 14,83" in txt and "tesoura" not in txt and "profit" not in txt.lower()
     media = dict(iv=0.4, iv_rank=50, iv_pct=60)
     assert "⚠️ NEUTRO" in messenger.alert_msg(sig, media, opt, "")           # alvo nao cobre, IV media
     put = analyzer.Signal("VALE3", "short", 65.70, 66.10, 66.90, 63.40, 1.0, 2.0, "baixa", "", "2 closes", "medio")
@@ -506,8 +506,9 @@ def test_aviso_ultimo_negocio_no_alerta():
     s = analyzer.analyze("TEST3", daily, _m15(now, [10.2, 10.35, 10.4, 10.45, 10.5, 10.5], 600_000), now)
     iv = dict(iv=0.3, iv_rank=17.4, iv_pct=14.7)
     opt = dict(symbol="AAA", strike=10.0, expiration="2026-12-18", ask=0.8, bid=0.8, max_loss_per_lot=80.0, stop_premium=0.4, delta=0.5, dte=50)
-    assert "confira o ask" not in messenger.alert_msg(s, iv, opt, "")
-    assert "confira o ask" in messenger.alert_msg(s, iv, dict(opt, last_only=True), "")
+    assert "preço de ontem" in messenger.alert_msg(s, iv, opt, "")                     # sem como recalcular: avisa que e o preco de ontem
+    assert "(confira o ask)" in messenger.alert_msg(s, iv, dict(opt, iv=0.4), "")        # recalculado com a cotacao atual
+    assert "(confira o ask)" in messenger.alert_msg(s, iv, dict(opt, last_only=True, iv=0.4), "")
 
 
 def test_diagnose_e_job_diag(monkeypatch):
@@ -555,7 +556,7 @@ def test_alerta_estima_preco_quando_so_ultimo_negocio():
     assert 0.7 <= messenger.estimar_preco(sig, opt) <= 0.95
     assert "Prazo: 12/11" in messenger.alert_msg(sig, iv, opt, "", date(2026, 10, 28))
     t2 = messenger.alert_msg(sig, iv, dict(opt, spot_ref=None), "")   # sem como estimar: mantem o aviso antigo
-    assert "último negócio, confira o ask" in t2
+    assert "preço de ontem, confira o ask" in t2
 
 
 def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):

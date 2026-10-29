@@ -110,17 +110,17 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
         L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
         return "\n".join(L)
     teto, aviso = opt["ask"], ""
-    if opt.get("last_only"):           # so ha o ultimo negocio: usa o topo da estimativa (hipotese mais cara) como teto de compra
-        est = estimar_preco(sig, opt)
-        if est:
-            teto = round(est * 1.3, 2)
-            opt = dict(opt, ask=teto, bid=teto, max_loss_per_lot=teto * opt.get("lot", config.OPTION_LOT))
-            aviso = " (confira o ask)"
-        else:
-            aviso = f" (último negócio, confira o ask)"
+    # os precos da brapi sao do fechamento de ontem: recalcula com a cotacao atual da acao (topo da faixa = hipotese mais cara)
+    est = estimar_preco(sig, opt)
+    if est:
+        teto = round(est * (1.3 if opt.get("last_only") else 1.1), 2)
+        opt = dict(opt, ask=teto, bid=teto, max_loss_per_lot=teto * opt.get("lot", config.OPTION_LOT))
+        aviso = " (confira o ask)"
+    else:
+        aviso = " (preço de ontem, confira o ask)"
     stop = round(sig.price + 0.5 * (sig.stop - sig.price), 2)          # mesmo stop que o acompanhamento de posicao usa
     L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {_dm(opt['expiration'])}", "",
-          f"Compra: até ~{fmt(teto)}{aviso}" if aviso else f"Compra: até {fmt(teto)}",
+          f"Compra: até ~{fmt(teto)}{aviso}",
           f"Alvo: ação a {fmt(sig.target)}", f"Sair se: ação {'abaixo de' if long_ else 'acima de'} {fmt(stop)}"]
     if today:
         import positions
