@@ -138,19 +138,26 @@ def listar(api, today):
         rows = _rows(c)
     if not rows:
         return "Nenhuma posição aberta."
-    L = ["Posições abertas"]
+    blocos = []
     for p in rows:
         try:
             px, ult = _last_price(api, p["ticker"], today)
         except Exception:
             px = None
-        L.append(f"• {p['symbol']} ({p['ticker']}): {p['qty']} a {fmt(p['entry'])}")
+        short = p["direction"] == "short"
+        B = [f"{'🔴' if short else '🟢'} <b>{p['symbol']}</b> ({p['ticker']})",
+             f"{p['qty']} a {fmt(p['entry'])} · aplicou R$ {fmt(p['qty'] * p['entry'], 0)}"]
         if px:
             est = est_option(p, px, today)
-            pct = (est / p["entry"] - 1) * 100
-            L.append(f"   ação {fmt(px)} · opção ~{fmt(est)} ({'+' if pct >= 0 else '−'}{fmt(abs(pct), 0)}%, {'+' if est >= p['entry'] else '−'}R$ {fmt(abs(est - p['entry']) * p['qty'], 0)}) estimado")
-        L.append(f"   sair se {'acima' if p['direction']=='short' else 'abaixo'} de {fmt(p['stop'])} · metade {fmt(p['partial'])} · alvo {fmt(p['target'])} · prazo {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}")
-    return "\n".join(L)
+            res = (est - p["entry"]) * p["qty"]; pct = (est / p["entry"] - 1) * 100
+            sg = "+" if res >= 0 else "−"
+            B += [f"Vale hoje: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
+        if p["realized"]:
+            B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
+        B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}",
+              f"Prazo: {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}"]
+        blocos.append("\n".join(B))
+    return "\n\n".join(blocos)
 
 
 def check(api, now_dt):

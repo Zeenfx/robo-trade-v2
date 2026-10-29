@@ -570,6 +570,10 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     r = positions.handle("comprei CSAN3 500 a 0,44 stop 2,65", today)
     assert "Posição registrada" in r and "2,65" in r and "2,15" in r and "12/11" in r
     assert "Nenhuma posição" not in positions.listar(type("A", (), {"history": lambda s, *a: []})(), today)
+    class A2:
+        def history(s, *a): return [dict(date=datetime(2026, 10, 28, 12, 0, tzinfo=TZ).timestamp(), close=2.35)]
+    lst = positions.listar(A2(), today)
+    assert "CSANX285" in lst and "500 a 0,44 · aplicou R$ 220" in lst and "Vale hoje: ~R$" in lst and "Resultado: +R$" in lst and "Sair se: acima de 2,65" in lst and "Prazo: 12/11" in lst
     class Api:
         def __init__(s, px): s.px = px
         def history(s, t, r, i):
