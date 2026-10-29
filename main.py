@@ -529,6 +529,18 @@ def job_morning():
     L += (["Perto de romper (a menos de 1%):"] + near) if near else ["Nenhum ativo perto de romper."]
     if baratos:
         L.append("IV mais barata: " + ", ".join(baratos))
+    try:   # balanços de hoje ou amanha nos ativos com posicao aberta
+        import balancos
+        hoje = now().date(); amanha = positions.add_pregoes(hoje, 1)
+        with database.conn() as c:
+            positions._ensure(c)
+            tks = sorted({r["ticker"] for r in positions._rows(c)})
+        for t in tks:
+            d = balancos.entre(t, hoje, amanha)
+            if d:
+                L.append(f"⚠️ Balanço de {t} {'HOJE' if d == hoje else 'amanhã'} (você tem posição)")
+    except Exception as e:
+        log.warning("Aviso de balanço: %s", e)
     messenger.send("\n".join(L))
 
 def job_heartbeat():

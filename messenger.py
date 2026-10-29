@@ -106,6 +106,13 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
     n_ab = (carteira or {}).get(sig.direction, 0)
     if n_ab:
         L.append(f"⚠️ Você já tem {n_ab} {'call' if long_ and n_ab == 1 else 'calls' if long_ else 'put' if n_ab == 1 else 'puts'} aberto{'' if n_ab == 1 else 's'}")
+    if today:
+        try:
+            import balancos, positions
+            b = balancos.texto(sig.ticker, today, positions.add_pregoes(today, config.TIME_EXIT_DAYS))
+            if b: L.append(b)
+        except Exception:
+            pass
     if not opt:
         L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
         return "\n".join(L)

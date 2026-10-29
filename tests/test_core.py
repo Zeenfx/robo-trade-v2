@@ -752,3 +752,21 @@ def test_resumo_variacao_do_dia(monkeypatch, tmp_path):
     assert any(x.startswith("Hoje: ▲ +R$") for x in r2)                 # acao caiu, o put subiu
     r3 = positions.resumo(Api(2.30), date(2026, 10, 30))                # repetir no mesmo dia nao muda a base
     assert any(x.startswith("Hoje: ▲ +R$") for x in r3)
+
+
+def test_balancos(monkeypatch, tmp_path):
+    import balancos, positions
+    from types import SimpleNamespace as N
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "b.db"))
+    today = date(2026, 10, 29)
+    assert str(balancos.entre("MGLU3", today, date(2026, 11, 12))) == "2026-11-05"
+    assert balancos.entre("MGLU3", today, date(2026, 11, 3)) is None
+    assert balancos.data_de("ABEV3") is None
+    assert "anotado: 05/11" in positions.handle("balanco ABEV3 05/11", today)
+    assert str(balancos.data_de("ABEV3")) == "2026-11-05"
+    assert "Use:" in positions.handle("balanco ABEV3 xx", today)
+    sig = N(direction="short", ticker="MGLU3", level=10.0, price=9.9, target=9.0, stop=10.4)
+    opt = dict(symbol="MGLUX100", strike=10.0, expiration="2026-12-18", ask=0.5, bid=0.5, max_loss_per_lot=50, dte=50, lot=100)
+    iv = dict(iv=0.4, iv_rank=40, iv_pct=50)
+    assert "Balanço de MGLU3 em 05/11, dentro do prazo" in messenger.alert_msg(sig, iv, opt, "", today)
+    assert "Balanço" not in messenger.alert_msg(N(**dict(vars(sig), ticker="CSAN3")), iv, opt, "", today)     # CSAN3 so em 13/11: depois do prazo (12/11)

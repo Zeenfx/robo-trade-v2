@@ -429,6 +429,12 @@ def handle(text, today, api=None):
             return close_position(_ticker_de(m.group(1)), int(m.group(2)) if m.group(2) else None, num(m.group(3)) if m.group(3) else None)
         if w[0] in ("posicoes", "posicao"):
             return listar(api, today)
+        if w[0] in ("balanco", "balancos"):
+            import balancos
+            mm = re.match(r"\w+\s+([a-z0-9]{4,6})\s+(\d{1,2}/\d{1,2})$", t)
+            if not mm:
+                return "Use: balanco ABEV3 05/11"
+            return balancos.cadastrar(mm.group(1), mm.group(2), today)
         if w[0] in ("resultados", "placar"):
             import outcomes
             if api is not None:
