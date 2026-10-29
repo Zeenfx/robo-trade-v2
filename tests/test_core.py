@@ -651,3 +651,22 @@ def test_placar_avaliar_e_relatorio(monkeypatch, tmp_path):
     assert outcomes.update(Api(), date(2026, 10, 29)) == 1
     txt = outcomes.relatorio()
     assert "1 resolvidos" in txt and "Alvo: 1" in txt and "Puts: alvo em 1 de 1" in txt and "IV média: alvo em 1 de 1" in txt
+
+
+def test_cadastro_de_opcao_propria(monkeypatch, tmp_path):
+    import positions
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "w.db"))
+    today = date(2026, 10, 29)
+    monkeypatch.setattr(config, "UNIVERSE", ["USIM5", "CSAN3"])
+    class Api:
+        def expirations(self, t, include_expired=False): return ["2026-11-19", "2026-12-18"]
+        def chain(self, t, e, side=None): return "d", [dict(symbol="USIMW700", strike=7.0, bid=1.4, ask=1.45, close=1.43)]
+        def analytics(self, t, e, date=None, side=None): return "d", [dict(symbol="USIMW700", impliedVolatility=0.6)]
+        def history(self, t, r, i): return [dict(date=datetime(2026, 10, 29, 9, 45, tzinfo=TZ).timestamp(), close=5.60)]
+    api = Api()
+    r = positions.handle("comprei USIMW700 200 a 0,55 sair 5,90 alvo 5,00", today, api)
+    assert "Posição registrada: 200 USIMW700 a 0,55" in r and "5,90" in r and "5,00" in r and "perto do vencimento" in r
+    lst = positions.listar(api, today)
+    assert "USIMW700" in lst and "própria" in lst and "Sair se: acima de 5,90" in lst and "Prazo: 17/11" in lst
+    assert "Posição encerrada" in positions.handle("vendi USIMW700 a 1,43", today, api)     # fecha pelo codigo da opcao
+    assert "não está entre" in positions.handle("comprei ABCDW100 10 a 1", today, api)

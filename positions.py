@@ -21,6 +21,9 @@ deadline TEXT, opened TEXT, status TEXT, flags TEXT, realized REAL);"""
 
 def _ensure(c):
     c.execute(SCHEMA.replace("\n", " "))
+    cols = [r[1] for r in c.execute("PRAGMA table_info(positions)").fetchall()]
+    if "origem" not in cols:
+        c.execute("ALTER TABLE positions ADD COLUMN origem TEXT DEFAULT 'robo'")
 
 
 def add_pregoes(d, n):
@@ -65,7 +68,7 @@ def _rows(c, where="status='open'", args=()):
     return [dict(r) for r in c.execute(f"SELECT * FROM positions WHERE {where} ORDER BY id", args).fetchall()]
 
 
-def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None, target=None, deadline=None, option=None, direction=None, level=None):
+def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None, target=None, deadline=None, option=None, direction=None, level=None, origem="robo", iv=None):
     """Abre uma posicao. Sem dados explicitos, usa o ultimo alerta com opcao do ticker. Retorna (mensagem, id|None)."""
     ticker = ticker.upper()
     with database.conn() as c:
@@ -76,21 +79,23 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
             if not alert:
                 return f"Não achei alerta recente de {ticker} com opção. Posição não registrada.", None
             sig, option = alert["signal"], alert["option"]
-            direction, spot0, target = sig["direction"], sig["price"], sig["target"]
+            direction, spot0 = sig["direction"], sig["price"]
+            target = target or sig["target"]
             sstop = sig["stop"]
             stop = stop or round(spot0 + 0.5 * (sstop - spot0), 2)
             partial = partial or round(spot0 + 0.6 * (target - spot0), 2)
         call = direction == "long"
         T = (datetime.strptime(option["expiration"], "%Y-%m-%d").date() - today).days / 365.0
-        try:
-            iv = implied_vol(call, price, spot0, option["strike"], T)
-        except Exception:
-            iv = None
+        if iv is None:
+            try:
+                iv = implied_vol(call, price, spot0, option["strike"], T)
+            except Exception:
+                iv = None
         deadline = deadline or str(add_pregoes(today, config.TIME_EXIT_DAYS))
-        cur = c.execute("INSERT INTO positions(ticker,symbol,direction,strike,expiration,qty,qty0,entry,spot0,iv,stop,partial,target,deadline,opened,status,flags,realized) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        cur = c.execute("INSERT INTO positions(ticker,symbol,direction,strike,expiration,qty,qty0,entry,spot0,iv,stop,partial,target,deadline,opened,status,flags,realized,origem) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (ticker, option["symbol"], direction, option["strike"], option["expiration"], qty, qty, price, spot0, iv, stop, partial, target,
-                         deadline, str(today), "open", "[]", 0.0))
+                         deadline, str(today), "open", "[]", 0.0, origem))
         pid = cur.lastrowid
     lado = "abaixo" if not call else "acima"
     dl = datetime.strptime(deadline, "%Y-%m-%d").strftime("%d/%m")
@@ -99,14 +104,14 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
             f"• passar de {fmt(stop)} (sair)\n"
             f"• chegar a {fmt(partial)} (realizar metade)\n"
             f"• chegar ao alvo {fmt(target)}\n"
-            f"• e no prazo, {dl} (10 pregões)."), pid
+            f"• e no prazo, {dl}" + (" (10 pregões)." if origem == "robo" else " (perto do vencimento).")), pid
 
 
 def close_position(ticker, qty, price):
     ticker = ticker.upper()
     with database.conn() as c:
         _ensure(c)
-        rows = _rows(c, "status='open' AND ticker=?", (ticker,))
+        rows = _rows(c, "status='open' AND (ticker=? OR symbol=?)", (ticker, ticker))
         if not rows:
             return f"Não há posição aberta em {ticker}."
         p = rows[-1]
@@ -145,7 +150,7 @@ def listar(api, today):
         except Exception:
             px = None
         short = p["direction"] == "short"
-        B = [f"{'🔴' if short else '🟢'} <b>{p['symbol']}</b> ({p['ticker']})",
+        B = [f"{'🔴' if short else '🟢'} <b>{p['symbol']}</b> ({p['ticker']})" + (" · própria" if p.get("origem") == "propria" else ""),
              f"{p['qty']} a {fmt(p['entry'])} · aplicou R$ {fmt(p['qty'] * p['entry'], 0)}"]
         if px:
             est = est_option(p, px, today)
@@ -194,7 +199,7 @@ def check(api, now_dt):
             msgs.append(f"🎯 REALIZAR METADE: {info}\nA ação chegou a {fmt(p['partial'])}. Vender {p['qty'] // 2} de {p['symbol']} e deixar o resto até o alvo {fmt(p['target'])}.")
         if "prazo" not in flags and str(today) >= p["deadline"]:
             flags.append("prazo")
-            msgs.append(f"⏰ PRAZO: {info}\nPassaram os 10 pregões. Sair de {p['symbol']} ({p['qty']}), salvo se você tiver um motivo novo.")
+            msgs.append(f"⏰ PRAZO: {info}\n" + ("Passaram os 10 pregões" if p.get("origem") != "propria" else "O vencimento está perto") + f". Sair de {p['symbol']} ({p['qty']}), salvo se você tiver um motivo novo.")
         if msgs:
             with database.conn() as c:
                 c.execute("UPDATE positions SET flags=? WHERE id=?", (json.dumps(flags), p["id"]))
@@ -203,8 +208,60 @@ def check(api, now_dt):
 
 
 # ---------- Telegram: leitura de comandos ----------
-HELP = ("Use: comprei TICKER QTD a PRECO (ex.: comprei CSAN3 500 a 0,44; opcional: stop 2,65)\n"
-        "vendi TICKER [QTD] [a PRECO] · posicoes")
+HELP = ("Use: comprei TICKER QTD a PRECO (ex.: comprei CSAN3 500 a 0,44; opcional: sair 2,65)\n"
+        "Opção sua, sem alerta: comprei USIMW700 200 a 0,55 sair 5,90 alvo 5,00\n"
+        "vendi CODIGO [QTD] [a PRECO] · posicoes · resultados")
+
+
+def sub_pregoes(d, n):
+    while n > 0:
+        d -= timedelta(days=1)
+        if d.weekday() < 5 and str(d) not in FERIADOS:
+            n -= 1
+    return d
+
+
+def cadastrar_propria(api, code, qty, price, today, stop=None, alvo=None, metade=None):
+    """Opcao que nao veio de alerta: descobre ticker, lado, strike e vencimento pelo codigo, na brapi. Retorna mensagem."""
+    code = code.upper()
+    m = re.match(r"^([A-Z]{4})([A-X])(\d{1,4})$", code)
+    if not m or api is None:
+        return f"Não reconheci o código {code}. Use o código da opção, ex.: USIMW700."
+    root, letra, _ = m.groups()
+    call = letra <= "L"
+    mes = (ord(letra) - ord("A")) % 12 + 1
+    side = "call" if call else "put"
+    tickers = [t for t in config.UNIVERSE if t.startswith(root)]
+    if not tickers:
+        return f"{root} não está entre os 30 ativos do robô, então não consigo ler a opção. Posição não registrada."
+    t = tickers[0]
+    exps = [e for e in api.expirations(t) if int(e[5:7]) == mes and e >= str(today)]
+    if not exps:
+        return f"Não achei vencimento de {code} na brapi. Posição não registrada."
+    exp = sorted(exps)[0]
+    _, ch = api.chain(t, exp, side=side)
+    serie = next((s for s in ch if (s.get("symbol") or "").upper() == code), None)
+    if not serie:
+        return f"Não achei a série {code} na brapi. Posição não registrada."
+    iv = None
+    try:
+        _, an = api.analytics(t, exp, side=side)
+        a = next((x for x in an if (x.get("symbol") or "").upper() == code), None)
+        iv = a.get("impliedVolatility") if a else None
+        if iv and iv > 3: iv /= 100.0
+    except Exception:
+        pass
+    px, _u = _last_price(api, t, today)
+    px = px or serie.get("strike")
+    k = serie["strike"]
+    sel = stop or round(px * (1.05 if not call else 0.95), 2)
+    alvo = alvo or round(px * (0.90 if not call else 1.10), 2)
+    metade = metade or round(px + 0.6 * (alvo - px), 2)
+    dl = str(sub_pregoes(datetime.strptime(exp, "%Y-%m-%d").date(), 2))
+    option = dict(symbol=code, strike=k, expiration=exp)
+    msg, _ = open_position(t, qty, price, today, stop=sel, spot0=px, partial=metade, target=alvo, deadline=dl, option=option,
+                           direction="long" if call else "short", origem="propria", iv=iv)
+    return msg
 
 
 def _ticker_de(ident):
@@ -226,10 +283,15 @@ def handle(text, today, api=None):
     w = t.split()
     try:
         if w[0] in ("comprei", "compre", "comprado", "comprou"):
-            m = re.match(r"\w+\s+([a-z0-9]{4,8})\s+(\d+)\s+(?:a\s+)?([\d.,]+)(?:\s+(?:stop|sair)\s+([\d.,]+))?$", t)
+            m = re.match(r"\w+\s+([a-z0-9]{4,8})\s+(\d+)\s+(?:a\s+)?([\d.,]+)((?:\s+(?:stop|sair|alvo|metade)\s+[\d.,]+)*)$", t)
             if not m:
                 return HELP
-            msg, _ = open_position(_ticker_de(m.group(1)), int(m.group(2)), num(m.group(3)), today, stop=num(m.group(4)) if m.group(4) else None)
+            nv = {k: num(v) for k, v in re.findall(r"(stop|sair|alvo|metade)\s+([\d.,]+)", m.group(4))}
+            ident, qty, price = m.group(1), int(m.group(2)), num(m.group(3))
+            stop = nv.get("sair") or nv.get("stop")
+            if re.match(r"^[a-z]{4}[a-x]\d{2,4}$", ident) and _ticker_de(ident) == ident.upper():   # codigo de opcao sem alerta do robo
+                return cadastrar_propria(api, ident, qty, price, today, stop, nv.get("alvo"), nv.get("metade"))
+            msg, _ = open_position(_ticker_de(ident), qty, price, today, stop=stop, target=nv.get("alvo"), partial=nv.get("metade"))
             return msg
         if w[0] == "vendi":
             m = re.match(r"vendi\s+([a-z0-9]{4,8})(?:\s+(\d+))?(?:\s+(?:a\s+)?([\d.,]+))?$", t)
