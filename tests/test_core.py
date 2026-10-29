@@ -707,3 +707,31 @@ def test_ajustar_niveis(monkeypatch, tmp_path):
     assert "alvo 17,50" in r and "sair se abaixo de 13,90" in r and "metade em 16,35" in r
     assert "Use:" in positions.handle("ajustar B3SAL160", today, Api())
     assert "Não há posição" in positions.handle("ajustar ZZZZX999 alvo 1", today, Api())
+
+
+def test_concentracao_protecao_e_resumo(monkeypatch, tmp_path):
+    import positions, main
+    from types import SimpleNamespace as N
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "k.db"))
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    today = date(2026, 10, 28)
+    sig0 = dict(ticker="CSAN3", direction="short", price=2.51, level=2.60, stop=2.81, target=1.91)
+    database.save_alert("2026-10-28", "CSAN3", "short", "2026-10-28T11:00:00", {"signal": sig0, "option": dict(symbol="CSANX285", strike=2.85, expiration="2026-12-18", dte=51), "reason": ""})
+    positions.handle("comprei CSAN3 500 a 0,44", today)
+    assert positions.contar_abertas() == {"short": 1, "long": 0}
+    sig = N(direction="short", ticker="GGBR4", level=24.0, price=23.8, target=22.2, stop=24.5)
+    opt = dict(symbol="GGBRX251", strike=24.87, expiration="2026-12-18", ask=1.6, bid=1.6, max_loss_per_lot=160, dte=51, lot=100)
+    iv = dict(iv=0.4, iv_rank=40, iv_pct=50)
+    assert "Você já tem 1 put aberto" in messenger.alert_msg(sig, iv, opt, "", today, None, {"short": 1, "long": 0})
+    assert "Você já tem 3 puts abertos" in messenger.alert_msg(sig, iv, opt, "", today, None, {"short": 3, "long": 0})
+    assert "já tem" not in messenger.alert_msg(sig, iv, opt, "", today, None, {"short": 0, "long": 2})
+    class Api:
+        def __init__(s, px): s.px = px
+        def history(s, t, r, i): return [dict(date=datetime(2026, 10, 29, 11, 0, tzinfo=TZ).timestamp(), close=s.px)]
+    positions.check(Api(2.14), datetime(2026, 10, 29, 11, 5, tzinfo=TZ))
+    assert len(sent) == 1 and "Proteja o resto" in sent[0] and "<code>ajustar CSANX285 sair " in sent[0]
+    prot = float(sent[0].split("sair ")[1].split("<")[0].replace(",", "."))
+    assert 2.35 < prot < 2.85            # entre o preco atual e o strike: ali a opcao volta a 0,44
+    r = positions.resumo(Api(2.35), date(2026, 10, 29))
+    assert r[0] == "Carteira:" and "▲ CSANX285 +" in r[1] and r[-1].startswith("Total: ▲")

@@ -93,7 +93,7 @@ def _iv_word(rank, pct):
     import iv_filter
     return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
 
-def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
+def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
     """Mensagem enxuta para celular: opcao, compra ate, alvo e stop (nivel da acao), prazo e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
     ivw = _iv_word(iv["iv_rank"], iv["iv_pct"])
@@ -103,6 +103,9 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None):
         L.append(f"⚠️ Já andou {fmt(ext,1)}% além do nível")
     if ibov is not None and abs(ibov) >= config.IBOV_ALERT_PCT:
         L.append(f"⚠️ Dia atípico: Ibovespa {fmt(ibov,1)}%. Preço da opção pode estar defasado")
+    n_ab = (carteira or {}).get(sig.direction, 0)
+    if n_ab:
+        L.append(f"⚠️ Você já tem {n_ab} {'call' if long_ and n_ab == 1 else 'calls' if long_ else 'put' if n_ab == 1 else 'puts'} aberto{'' if n_ab == 1 else 's'}")
     if not opt:
         L += ["", "<b>⚠️ SEM OPÇÃO</b>", f"{html.escape(str(opt_err)).capitalize() if opt_err else 'Nenhuma opção líquida'}. IV {ivw}."]
         return "\n".join(L)

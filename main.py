@@ -104,7 +104,7 @@ def job_intraday():
         except BrapiError as e:
             opt, err = None, str(e)
         if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:05
-            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov))
+            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas()))
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
         database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
@@ -482,6 +482,12 @@ def job_summary():
             L += ["Perto de romper amanhã:"] + near
     except Exception as e:
         log.warning("Lista de proximos rompimentos falhou: %s", e)
+    try:
+        cart = positions.resumo(Brapi(), now().date())
+        if cart:
+            L += [""] + cart
+    except Exception as e:
+        log.warning("Resumo da carteira falhou: %s", e)
     if messenger.send("\n".join(L)):
         database.set_meta("summary_last", hoje)
 

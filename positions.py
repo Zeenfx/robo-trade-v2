@@ -178,6 +178,61 @@ def listar(api, today):
     return "\n\n".join(blocos)
 
 
+def contar_abertas():
+    """{'short': n_puts, 'long': n_calls} das posicoes abertas."""
+    out = {"short": 0, "long": 0}
+    try:
+        with database.conn() as c:
+            _ensure(c)
+            for r in _rows(c):
+                out[r["direction"]] = out.get(r["direction"], 0) + 1
+    except Exception as e:
+        log.warning("Contagem de posicoes: %s", e)
+    return out
+
+
+def nivel_protegido(p, today):
+    """Nivel da acao em que a opcao volta ao preco de compra (para subir a saida e proteger o lucro). None se nao der."""
+    try:
+        call = p["direction"] == "long"
+        T = (datetime.strptime(p["expiration"], "%Y-%m-%d").date() - today).days / 365.0
+        v = p["iv"] or 0.5
+        lo, hi = (p["strike"] * 0.3, p["strike"] * 3)
+        for _ in range(60):          # opcao sobe com a acao (call) / cai com a acao (put): busca o nivel em que vale o preco de compra
+            m = (lo + hi) / 2
+            val = bs(call, m, p["strike"], T, v)
+            if (val > p["entry"]) == call: hi = m
+            else: lo = m
+        return round((lo + hi) / 2, 2)
+    except Exception:
+        return None
+
+
+def resumo(api, today):
+    """Linhas compactas da carteira para o resumo do fim do dia."""
+    with database.conn() as c:
+        _ensure(c)
+        rows = _rows(c)
+    if not rows:
+        return []
+    L, ap, val = ["Carteira:"], 0.0, 0.0
+    for p in rows:
+        try:
+            px, ult = _last_price(api, p["ticker"], today)
+        except Exception:
+            px = None
+        if not px:
+            continue
+        est = est_option(p, px, today)
+        pct = (est / p["entry"] - 1) * 100
+        ap += p["qty"] * p["entry"]; val += est * p["qty"]
+        L.append(f"{'▲' if pct >= 0 else '▼'} {p['symbol']} {'+' if pct >= 0 else '−'}{fmt(abs(pct), 0)}%")
+    if ap:
+        r = val - ap
+        L.append(f"Total: {'▲' if r >= 0 else '▼'} {'+' if r >= 0 else '−'}R$ {fmt(abs(r), 0)} ({'+' if r >= 0 else '−'}{fmt(abs(r / ap * 100), 0)}%) estimado")
+    return L if ap else []
+
+
 def check(api, now_dt):
     """Avisa (uma vez cada) stop, saida parcial, alvo e prazo. Roda a cada poucos minutos no pregao."""
     today = now_dt.date()
@@ -209,7 +264,11 @@ def check(api, now_dt):
             msgs.append(f"🎯 ALVO: {info}\nA ação chegou ao alvo {fmt(p['target'])}. Realizar o restante de {p['symbol']} ({p['qty']}).")
         elif "parcial" not in flags and reach(p["partial"]):
             flags.append("parcial")
-            msgs.append(f"🎯 REALIZAR METADE: {info}\nA ação chegou a {fmt(p['partial'])}. Vender {p['qty'] // 2} de {p['symbol']} e deixar o resto até o alvo {fmt(p['target'])}.")
+            txt = f"🎯 REALIZAR METADE: {info}\nA ação chegou a {fmt(p['partial'])}. Vender {p['qty'] // 2} de {p['symbol']} e deixar o resto até o alvo {fmt(p['target'])}."
+            prot = nivel_protegido(p, today) if est > p["entry"] else None
+            if prot:
+                txt += f"\n\nProteja o resto (a opção volta ao seu preço de compra em {fmt(prot)}):\n<code>ajustar {p['symbol']} sair {str(prot).replace('.', ',')}</code>"
+            msgs.append(txt)
         if "prazo" not in flags and str(today) >= p["deadline"]:
             flags.append("prazo")
             msgs.append(f"⏰ PRAZO: {info}\n" + ("Passaram os 10 pregões" if p.get("origem") != "propria" else "O vencimento está perto") + f". Sair de {p['symbol']} ({p['qty']}), salvo se você tiver um motivo novo.")
