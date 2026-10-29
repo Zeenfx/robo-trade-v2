@@ -769,4 +769,4 @@ def test_balancos(monkeypatch, tmp_path):
     opt = dict(symbol="MGLUX100", strike=10.0, expiration="2026-12-18", ask=0.5, bid=0.5, max_loss_per_lot=50, dte=50, lot=100)
     iv = dict(iv=0.4, iv_rank=40, iv_pct=50)
     assert "Balanço de MGLU3 em 05/11, dentro do prazo" in messenger.alert_msg(sig, iv, opt, "", today)
-    assert "Balanço" not in messenger.alert_msg(N(**dict(vars(sig), ticker="CSAN3")), iv, opt, "", today)     # CSAN3 so em 13/11: depois do prazo (12/11)
+    assert "Balanço" not in messenger.alert_msg(N(**dict(vars(sig), ticker="CSNA3")), iv, opt, "", today)     # CSNA3 sem data conhecida: sem aviso
