@@ -223,7 +223,7 @@ def check(api, now_dt):
 # ---------- Telegram: leitura de comandos ----------
 HELP = ("Use: comprei TICKER QTD a PRECO (ex.: comprei CSAN3 500 a 0,44; opcional: sair 2,65)\n"
         "Opção sua, sem alerta: comprei USIMW700 200 a 0,55 sair 5,90 alvo 5,00\n"
-        "vendi CODIGO [QTD] [a PRECO] · posicoes · resultados")
+        "vendi CODIGO [QTD] [a PRECO] · ajustar CODIGO alvo X sair Y · posicoes · resultados")
 
 
 def sub_pregoes(d, n):
@@ -293,6 +293,24 @@ def cadastrar_propria(api, code, qty, price, today, stop=None, alvo=None, metade
     return msg + (aviso if pid else "")
 
 
+def ajustar(ident, stop=None, alvo=None, metade=None):
+    """Troca os niveis (da acao) de uma posicao aberta, pelo codigo da opcao ou ticker. Zera os avisos ja dados dos niveis trocados."""
+    ident = ident.upper()
+    with database.conn() as c:
+        _ensure(c)
+        rows = _rows(c, "status='open' AND (ticker=? OR symbol=?)", (ident, ident))
+        if not rows:
+            return f"Não há posição aberta em {ident}."
+        p = rows[-1]
+        novo = dict(stop=stop or p["stop"], target=alvo or p["target"], partial=metade or p["partial"])
+        if alvo and not metade:      # metade acompanha o alvo: 60% do caminho
+            novo["partial"] = round(p["spot0"] + 0.6 * (alvo - p["spot0"]), 2)
+        flags = [f for f in json.loads(p["flags"] or "[]") if not ((stop and f == "stop") or (alvo and f in ("alvo", "parcial")) or (metade and f == "parcial"))]
+        c.execute("UPDATE positions SET stop=?, target=?, partial=?, flags=? WHERE id=?", (novo["stop"], novo["target"], novo["partial"], json.dumps(flags), p["id"]))
+    lado = "acima de" if p["direction"] == "short" else "abaixo de"
+    return (f"✅ {p['symbol']} ajustada:\n• sair se {lado} {fmt(novo['stop'])}\n• metade em {fmt(novo['partial'])}\n• alvo {fmt(novo['target'])}")
+
+
 def _ticker_de(ident):
     """Aceita o ticker (GGBR4) ou o codigo da opcao (GGBRX251); para a opcao, acha o ticker no ultimo alerta que a trouxe."""
     ident = ident.upper()
@@ -322,6 +340,12 @@ def handle(text, today, api=None):
                 return cadastrar_propria(api, ident, qty, price, today, stop, nv.get("alvo"), nv.get("metade"))
             msg, _ = open_position(_ticker_de(ident), qty, price, today, stop=stop, target=nv.get("alvo"), partial=nv.get("metade"))
             return msg
+        if w[0] in ("ajustar", "ajuste"):
+            m = re.match(r"\w+\s+([a-z0-9]{4,8})((?:\s+(?:stop|sair|alvo|metade)\s+[\d.,]+)+)$", t)
+            if not m:
+                return "Use: ajustar B3SAL160 alvo 17,50 sair 13,90"
+            nv = {k: num(v) for k, v in re.findall(r"(stop|sair|alvo|metade)\s+([\d.,]+)", m.group(2))}
+            return ajustar(_ticker_de(m.group(1)), nv.get("sair") or nv.get("stop"), nv.get("alvo"), nv.get("metade"))
         if w[0] == "vendi":
             m = re.match(r"vendi\s+([a-z0-9]{4,8})(?:\s+(\d+))?(?:\s+(?:a\s+)?([\d.,]+))?$", t)
             if not m:

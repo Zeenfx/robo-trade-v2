@@ -690,3 +690,20 @@ def test_cadastro_propria_raiz_com_digito_e_serie_fora_da_brapi(monkeypatch, tmp
     assert "Posição registrada: 200 B3SAL160 a 1,25" in r and "Não achei a série" not in r
     r2 = positions.handle("comprei USIMW700 200 a 0,55", today, api)       # mensal 19/11 sem a serie na brapi
     assert "Posição registrada: 200 USIMW700" in r2 and "usei strike 7,00" in r2 and "19/11" in r2
+
+
+def test_ajustar_niveis(monkeypatch, tmp_path):
+    import positions
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "j.db"))
+    monkeypatch.setattr(config, "UNIVERSE", ["B3SA3"])
+    today = date(2026, 10, 29)
+    class Api:
+        def expirations(self, t, include_expired=False): return ["2026-12-18"]
+        def chain(self, t, e, side=None): return "d", [dict(symbol="B3SAL160", strike=16.0)]
+        def analytics(self, t, e, date=None, side=None): return "d", []
+        def history(self, t, r, i): return [dict(date=datetime(2026, 10, 29, 9, 45, tzinfo=TZ).timestamp(), close=14.62)]
+    positions.handle("comprei B3SAL160 200 a 1,25", today, Api())
+    r = positions.handle("ajustar B3SAL160 alvo 17,50 sair 13,90", today, Api())
+    assert "alvo 17,50" in r and "sair se abaixo de 13,90" in r and "metade em 16,35" in r
+    assert "Use:" in positions.handle("ajustar B3SAL160", today, Api())
+    assert "Não há posição" in positions.handle("ajustar ZZZZX999 alvo 1", today, Api())
