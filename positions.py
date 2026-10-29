@@ -85,6 +85,9 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
             stop = stop or round(spot0 + 0.5 * (sstop - spot0), 2)
             partial = partial or round(spot0 + 0.6 * (target - spot0), 2)
         call = direction == "long"
+        dup = c.execute("SELECT 1 FROM positions WHERE status='open' AND symbol=? AND qty0=? AND entry=?", (option["symbol"], qty, price)).fetchone()
+        if dup:
+            return f"Já cadastrada: {qty} {option['symbol']} a {fmt(price)}. Ignorei a repetição.", None
         T = (datetime.strptime(option["expiration"], "%Y-%m-%d").date() - today).days / 365.0
         if iv is None:
             try:
