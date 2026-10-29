@@ -151,7 +151,7 @@ def listar(api, today):
             est = est_option(p, px, today)
             res = (est - p["entry"]) * p["qty"]; pct = (est / p["entry"] - 1) * 100
             sg = "+" if res >= 0 else "−"
-            B += [f"Vale hoje: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
+            B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
         if p["realized"]:
             B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
         B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}",
