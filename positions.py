@@ -275,7 +275,7 @@ def check(api, now_dt):
         msgs = []
         if "stop" not in flags and hit(p["stop"]):
             flags.append("stop")
-            msgs.append(f"🛑 SAIR: {info}\nA ação {'subiu' if short else 'caiu'} até {fmt(p['stop'])}. Sair de {p['symbol']} ({p['qty']}). Confira o bid no Profit.")
+            msgs.append(f"🛑 SAIR: {info}\nA ação {'passou de' if short else 'caiu abaixo de'} {fmt(p['stop'])} e está em {fmt(px)}. Sair de {p['symbol']} ({p['qty']}). Confira o bid no Profit.")
         elif "alvo" not in flags and reach(p["target"]):
             flags += ["alvo", "parcial"]
             msgs.append(f"🎯 ALVO: {info}\nA ação chegou ao alvo {fmt(p['target'])}. Realizar o restante de {p['symbol']} ({p['qty']}).")
