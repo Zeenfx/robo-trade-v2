@@ -143,7 +143,7 @@ def listar(api, today):
         rows = _rows(c)
     if not rows:
         return "Nenhuma posição aberta."
-    blocos = []
+    blocos, tot_ap, tot_val, tot_real = [], 0.0, 0.0, 0.0
     for p in rows:
         try:
             px, ult = _last_price(api, p["ticker"], today)
@@ -156,12 +156,22 @@ def listar(api, today):
             est = est_option(p, px, today)
             res = (est - p["entry"]) * p["qty"]; pct = (est / p["entry"] - 1) * 100
             sg = "+" if res >= 0 else "−"
+            tot_ap += p["qty"] * p["entry"]; tot_val += est * p["qty"]
             B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
+        tot_real += p["realized"] or 0
         if p["realized"]:
             B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
         B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}",
               f"Prazo: {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}"]
         blocos.append("\n".join(B))
+    if len(rows) > 1 and tot_ap:
+        r = tot_val - tot_ap
+        sg = "+" if r >= 0 else "−"
+        T = [f"<b>Carteira ({len(rows)} opções)</b>", f"Aplicado: R$ {fmt(tot_ap, 0)}", f"Valor atual: ~R$ {fmt(tot_val, 0)} (estimado)",
+             f"Resultado: {sg}R$ {fmt(abs(r), 0)} ({sg}{fmt(abs(r / tot_ap * 100), 0)}%)"]
+        if tot_real:
+            T.append(f"Já realizado: {'+' if tot_real >= 0 else '−'}R$ {fmt(abs(tot_real), 0)}")
+        blocos.append("\n".join(T))
     return "\n\n".join(blocos)
 
 

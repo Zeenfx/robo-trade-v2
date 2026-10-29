@@ -668,5 +668,6 @@ def test_cadastro_de_opcao_propria(monkeypatch, tmp_path):
     assert "Posição registrada: 200 USIMW700 a 0,55" in r and "5,90" in r and "5,00" in r and "perto do vencimento" in r
     lst = positions.listar(api, today)
     assert "USIMW700" in lst and "própria" in lst and "Sair se: acima de 5,90" in lst and "Prazo: 17/11" in lst
+    assert "Carteira (" not in lst        # uma posicao so: sem total
     assert "Posição encerrada" in positions.handle("vendi USIMW700 a 1,43", today, api)     # fecha pelo codigo da opcao
     assert "não está entre" in positions.handle("comprei ABCDW100 10 a 1", today, api)
