@@ -622,3 +622,28 @@ def test_poll_telegram(monkeypatch, tmp_path):
                  {"update_id": 6, "message": {"chat": {"id": 7}, "text": "posicoes"}}])
     positions.poll(None, date(2026, 10, 28))
     assert sent == ["Nenhuma posição aberta."] and database.get_meta("tg_offset") == "7"
+
+
+def test_placar_avaliar_e_relatorio(monkeypatch, tmp_path):
+    import outcomes
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "o.db"))
+    sig = dict(ticker="CSAN3", direction="short", price=2.51, level=2.60, stop=2.81, target=1.91)
+    assert outcomes.niveis(sig) == (2.66, 2.15, 1.91)
+    b = lambda h, l, c: dict(high=h, low=l, close=c)
+    assert outcomes.avaliar(sig, [b(2.55, 2.40, 2.45), b(2.50, 2.10, 2.12), b(2.2, 1.90, 1.95)])[:2] == ("alvo", 3)
+    assert outcomes.avaliar(sig, [b(2.55, 2.40, 2.45), b(2.70, 2.40, 2.6)])[:2] == ("saida", 2)
+    assert outcomes.avaliar(sig, [b(2.70, 1.90, 2.0)])[:2] == ("saida", 1)             # mesmo dia: conta como saida
+    r = outcomes.avaliar(sig, [b(2.5, 2.4, 2.45)] * 10)
+    assert r[0] == "prazo" and r[1] == 10 and round(r[2], 1) == 2.4
+    assert outcomes.avaliar(sig, [b(2.5, 2.4, 2.45)] * 3) is None                         # ainda aberto
+    # integracao: alerta antigo e resolvido pelo update
+    database.save_alert("2026-10-20", "CSAN3", "short", "2026-10-20T11:00:00", {"signal": sig, "option": dict(symbol="X"), "reason": "", "iv": dict(iv_rank=40, iv_pct=60)})
+    class Api:
+        def history(s, t, r, i):
+            out = []
+            for k, (h, l, c) in enumerate([(2.5, 2.4, 2.45), (2.2, 1.9, 1.95)]):
+                out.append(dict(date=datetime(2026, 10, 21 + k, 12, tzinfo=TZ).timestamp(), high=h, low=l, close=c))
+            return out
+    assert outcomes.update(Api(), date(2026, 10, 29)) == 1
+    txt = outcomes.relatorio()
+    assert "1 resolvidos" in txt and "Alvo: 1" in txt and "Puts: alvo em 1 de 1" in txt and "IV média: alvo em 1 de 1" in txt

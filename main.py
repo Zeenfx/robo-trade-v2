@@ -3,7 +3,7 @@ import json
 import os, sys, logging
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-import config, database, messenger, screener, analyzer, options_selector, iv_filter, positions
+import config, database, messenger, screener, analyzer, options_selector, iv_filter, positions, outcomes
 from data_fetcher import Brapi, BrapiError, BrapiPlanError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -107,7 +107,7 @@ def job_intraday():
             messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov))
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
-        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err})
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
@@ -405,6 +405,16 @@ def job_posicoes():
     except Exception as e:
         log.warning("Posicoes: %s", e)
 
+def job_placar():
+    """Fim do dia: resolve alertas pendentes (alvo, saida ou prazo). Sexta-feira envia o placar da semana."""
+    try:
+        n = outcomes.update(Brapi(), now().date())
+        log.info("Placar: %d alertas resolvidos agora", n)
+        if now().weekday() == 4:
+            messenger.send(outcomes.relatorio())
+    except Exception as e:
+        log.warning("Placar: %s", e)
+
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes)."""
     try:
@@ -555,6 +565,7 @@ def serve():
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(job_posicoes, "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
+    s.add_job(job_placar, "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")

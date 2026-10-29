@@ -231,6 +231,12 @@ def handle(text, today, api=None):
             return close_position(_ticker_de(m.group(1)), int(m.group(2)) if m.group(2) else None, num(m.group(3)) if m.group(3) else None)
         if w[0] in ("posicoes", "posicao"):
             return listar(api, today)
+        if w[0] in ("resultados", "placar"):
+            import outcomes
+            if api is not None:
+                try: outcomes.update(api, today)
+                except Exception: log.exception("Placar")
+            return outcomes.relatorio()
     except Exception as e:
         log.exception("Comando falhou: %s", text)
         return f"Não consegui processar ({type(e).__name__}). {HELP}"
