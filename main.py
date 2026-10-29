@@ -398,6 +398,51 @@ def job_diag_opcoes():
     if enviado:
         database.set_meta(key, "1")
 
+def job_diag_semanais():
+    """Checagem unica (so leitura): quais dos ativos tem opcoes semanais nos proximos 14 dias e quantas series passam nos filtros (delta, spread, liquidez)."""
+    key = "diag_sem:v1"
+    if database.get_meta(key):
+        return
+    hoje = now().date()
+    api = Brapi()
+    messenger.send("Checagem de semanais: iniciada (30 ativos). Resultado chega em blocos.")
+    L, com, sem = [], [], []
+    enviado = True
+    for t in config.UNIVERSE:
+        try:
+            exps = [e for e in api.expirations(t) if 1 <= (datetime.strptime(e, "%Y-%m-%d").date() - hoje).days <= 14 and not iv_filter.is_monthly(e)]
+            if not exps:
+                sem.append(t); continue
+            ok_c = ok_p = n = 0
+            for e in sorted(exps)[:2]:
+                for side in ("call", "put"):
+                    _, an = api.analytics(t, e, side=side)
+                    _, ch = api.chain(t, e, side=side)
+                    book = {x["symbol"]: x for x in ch}
+                    for a in an:
+                        x = book.get(a["symbol"])
+                        if not x or a.get("delta") is None or not (config.DELTA_MIN <= abs(a["delta"]) <= config.DELTA_MAX):
+                            continue
+                        bid, ask = x.get("bid") or 0, x.get("ask") or 0
+                        if bid <= 0 or ask <= 0 or ask < bid:
+                            px = x.get("close") or 0
+                            if px <= 0:
+                                continue
+                            bid = ask = px
+                        if (ask - bid) / ((ask + bid) / 2) * 100 > config.MAX_SPREAD_PCT:
+                            continue
+                        if (x.get("openInterest") or 0) < config.MIN_OPEN_INTEREST or (x.get("volume") or 0) < config.MIN_VOLUME:
+                            continue
+                        if side == "call": ok_c += 1
+                        else: ok_p += 1
+            com.append(f"{t}: {len(exps)} venc ({', '.join(e[8:10] + '/' + e[5:7] for e in sorted(exps)[:3])}) · series ok: {ok_c} calls, {ok_p} puts")
+        except Exception as e:
+            L.append(f"{t}: erro {type(e).__name__} {str(e)[:60]}")
+    msg = ["Semanais (proximos 14 dias):"] + (com or ["nenhum ativo com semanal"]) + ["", "Sem semanal: " + (", ".join(sem) or "-")] + L
+    enviado = messenger.send("\n".join(msg))
+    if enviado:
+        database.set_meta(key, "1")
+
 def job_posicoes():
     """Confere stop/parcial/alvo/prazo das posicoes abertas (so avisa; nunca opera)."""
     try:
@@ -587,6 +632,7 @@ def serve():
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
+    s.add_job(job_diag_semanais, "date", run_date=now() + timedelta(seconds=150), id="diag_sem")
     s.add_job(job_dist_iv, "date", run_date=now() + timedelta(seconds=90), id="dist_iv")
     if config.CHECK_IV:
         s.add_job(job_check_iv, "date", run_date=now() + timedelta(seconds=60), id="check_iv")
