@@ -584,8 +584,10 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     positions.check(Api(2.14), d29); assert len(sent) == 1 and "REALIZAR METADE" in sent[0]
     positions.check(Api(2.14), d29); assert len(sent) == 1        # nao repete
     positions.check(Api(2.66), d29); assert len(sent) == 2 and "SAIR" in sent[1]
-    assert "Restam 250" in positions.handle("vendi CSAN3 250 a 0,70", today)
-    assert "encerrada" in positions.handle("vendi CSAN3 a 0,30", today)
+    r1 = positions.handle("vendi CSAN3 250 a 0,70", today)
+    assert "Restam 250" in r1 and "Vendida: 250" in r1 and "Resultado: ▲" in r1 and "Já realizado na carteira: +R$" in r1
+    r2 = positions.handle("vendi CSAN3 a 0,30", today)
+    assert "encerrada" in r2 and "Resultado: ▼" in r2
     assert positions.handle("bom dia", today) is None
     assert "Use:" in positions.handle("comprei xx", today)
     assert "Não achei alerta" in positions.handle("comprei ZZZZ3 10 a 1", today)

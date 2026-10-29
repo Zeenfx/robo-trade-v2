@@ -122,10 +122,16 @@ def close_position(ticker, qty, price):
         res = (price - p["entry"]) * q if price is not None else 0.0
         left = p["qty"] - q
         c.execute("UPDATE positions SET qty=?, realized=?, status=? WHERE id=?", (left, (p["realized"] or 0) + res, "open" if left > 0 else "closed", p["id"]))
-        total = (p["realized"] or 0) + res
-    txt = f"Registrado: vendeu {q} {p['symbol']}" + (f" a {fmt(price)} → {'+' if res >= 0 else '−'}R$ {fmt(abs(res), 0)}" if price is not None else "") + "."
-    txt += f" Restam {left}." if left > 0 else (f" Posição encerrada. Resultado total: {'+' if total >= 0 else '−'}R$ {fmt(abs(total), 0)}." if price is not None else " Posição encerrada.")
-    return txt
+        tot = c.execute("SELECT COALESCE(SUM(realized),0) FROM positions").fetchone()[0]
+    L = [f"✅ Vendida: {q} {p['symbol']}" + (f" a {fmt(price)}" if price is not None else "")]
+    if price is not None:
+        sg = "+" if res >= 0 else "−"
+        L += [f"Aplicou R$ {fmt(q * p['entry'], 0)} · recebeu R$ {fmt(q * price, 0)}",
+              f"Resultado: {'▲' if res >= 0 else '▼'} {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs((price / p['entry'] - 1) * 100), 0)}%)"]
+    L.append(f"Restam {left}." if left > 0 else "Posição encerrada.")
+    if price is not None:
+        L.append(f"Já realizado na carteira: {'+' if tot >= 0 else '−'}R$ {fmt(abs(tot), 0)}")
+    return "\n".join(L)
 
 
 def _last_price(api, ticker, today):
@@ -140,13 +146,33 @@ def config_tz():
     return ZoneInfo(config.TZ)
 
 
+def _hoje(snap, today):
+    """Linha 'Hoje' comparando com o ultimo resumo anterior (so posicoes que ja existiam com a mesma quantidade). None se nao houver base."""
+    try:
+        datas = json.loads(database.get_meta("cart_dates") or "[]")
+        antes = [d for d in datas if d < str(today)]
+        if not antes:
+            return None
+        ant = json.loads(database.get_meta("cart:" + antes[-1]) or "{}")
+        comum = [x for x in snap if x in ant and ant[x][0] == snap[x][0]]
+        if not comum:
+            return None
+        dif = sum(snap[x][1] - ant[x][1] for x in comum); base = sum(ant[x][1] for x in comum)
+        return f"Hoje: {'▲' if dif >= 0 else '▼'} {'+' if dif >= 0 else '−'}R$ {fmt(abs(dif), 0)} ({'+' if dif >= 0 else '−'}{fmt(abs(dif / base * 100), 1)}%)"
+    except Exception as e:
+        log.warning("Variacao do dia: %s", e)
+        return None
+
+
 def listar(api, today):
     with database.conn() as c:
         _ensure(c)
         rows = _rows(c)
     if not rows:
         return "Nenhuma posição aberta."
-    blocos, tot_ap, tot_val, tot_real = [], 0.0, 0.0, 0.0
+    blocos, tot_ap, tot_val, snap = [], 0.0, 0.0, {}
+    with database.conn() as c:
+        tot_real = c.execute("SELECT COALESCE(SUM(realized),0) FROM positions").fetchone()[0]
     for p in rows:
         try:
             px, ult = _last_price(api, p["ticker"], today)
@@ -159,9 +185,8 @@ def listar(api, today):
             est = est_option(p, px, today)
             res = (est - p["entry"]) * p["qty"]; pct = (est / p["entry"] - 1) * 100
             sg = "+" if res >= 0 else "−"
-            tot_ap += p["qty"] * p["entry"]; tot_val += est * p["qty"]
+            tot_ap += p["qty"] * p["entry"]; tot_val += est * p["qty"]; snap[p["symbol"]] = [p["qty"], round(est * p["qty"], 2)]
             B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {'▲' if res >= 0 else '▼'} {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
-        tot_real += p["realized"] or 0
         if p["realized"]:
             B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
         B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}",
@@ -172,6 +197,8 @@ def listar(api, today):
         sg = "+" if r >= 0 else "−"
         T = [f"<b>Carteira ({len(rows)} opções)</b>", f"Aplicado: R$ {fmt(tot_ap, 0)}", f"Valor atual: ~R$ {fmt(tot_val, 0)} (estimado)",
              f"Resultado: {'▲' if r >= 0 else '▼'} {sg}R$ {fmt(abs(r), 0)} ({sg}{fmt(abs(r / tot_ap * 100), 0)}%)"]
+        h = _hoje(snap, today)
+        if h: T.append(h)
         if tot_real:
             T.append(f"Já realizado: {'+' if tot_real >= 0 else '−'}R$ {fmt(abs(tot_real), 0)}")
         blocos.append("\n".join(T))
@@ -232,15 +259,10 @@ def resumo(api, today):
         return []
     r = val - ap
     L.append(f"Total: {'▲' if r >= 0 else '▼'} {'+' if r >= 0 else '−'}R$ {fmt(abs(r), 0)} ({'+' if r >= 0 else '−'}{fmt(abs(r / ap * 100), 0)}%) estimado")
-    try:    # variacao do dia: compara com o ultimo resumo anterior, so nas posicoes que ja existiam com a mesma quantidade
+    h = _hoje(snap, today)
+    if h: L.append(h)
+    try:
         datas = json.loads(database.get_meta("cart_dates") or "[]")
-        antes = [d for d in datas if d < str(today)]
-        if antes:
-            ant = json.loads(database.get_meta("cart:" + antes[-1]) or "{}")
-            comum = [s for s in snap if s in ant and ant[s][0] == snap[s][0]]
-            if comum:
-                dif = sum(snap[s][1] - ant[s][1] for s in comum); base = sum(ant[s][1] for s in comum)
-                L.append(f"Hoje: {'▲' if dif >= 0 else '▼'} {'+' if dif >= 0 else '−'}R$ {fmt(abs(dif), 0)} ({'+' if dif >= 0 else '−'}{fmt(abs(dif / base * 100), 1)}%)")
         database.set_meta("cart:" + str(today), json.dumps(snap))
         if str(today) not in datas:
             datas.append(str(today))
