@@ -573,7 +573,7 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     class A2:
         def history(s, *a): return [dict(date=datetime(2026, 10, 28, 12, 0, tzinfo=TZ).timestamp(), close=2.35)]
     lst = positions.listar(A2(), today)
-    assert "CSANX285" in lst and "500 a 0,44 · aplicou R$ 220" in lst and "Valor atual: ~R$" in lst and "Resultado: +R$" in lst and "Sair se: acima de 2,65" in lst and "Prazo: 12/11" in lst
+    assert "CSANX285" in lst and "500 a 0,44 · aplicou R$ 220" in lst and "Valor atual: ~R$" in lst and "Resultado: ▲ +R$" in lst and "Sair se: acima de 2,65" in lst and "Prazo: 12/11" in lst
     class Api:
         def __init__(s, px): s.px = px
         def history(s, t, r, i):

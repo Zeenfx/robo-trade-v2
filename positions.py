@@ -160,7 +160,7 @@ def listar(api, today):
             res = (est - p["entry"]) * p["qty"]; pct = (est / p["entry"] - 1) * 100
             sg = "+" if res >= 0 else "−"
             tot_ap += p["qty"] * p["entry"]; tot_val += est * p["qty"]
-            B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
+            B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {'▲' if res >= 0 else '▼'} {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
         tot_real += p["realized"] or 0
         if p["realized"]:
             B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
@@ -171,7 +171,7 @@ def listar(api, today):
         r = tot_val - tot_ap
         sg = "+" if r >= 0 else "−"
         T = [f"<b>Carteira ({len(rows)} opções)</b>", f"Aplicado: R$ {fmt(tot_ap, 0)}", f"Valor atual: ~R$ {fmt(tot_val, 0)} (estimado)",
-             f"Resultado: {sg}R$ {fmt(abs(r), 0)} ({sg}{fmt(abs(r / tot_ap * 100), 0)}%)"]
+             f"Resultado: {'▲' if r >= 0 else '▼'} {sg}R$ {fmt(abs(r), 0)} ({sg}{fmt(abs(r / tot_ap * 100), 0)}%)"]
         if tot_real:
             T.append(f"Já realizado: {'+' if tot_real >= 0 else '−'}R$ {fmt(abs(tot_real), 0)}")
         blocos.append("\n".join(T))
