@@ -735,3 +735,19 @@ def test_concentracao_protecao_e_resumo(monkeypatch, tmp_path):
     assert 2.35 < prot < 2.85            # entre o preco atual e o strike: ali a opcao volta a 0,44
     r = positions.resumo(Api(2.35), date(2026, 10, 29))
     assert r[0] == "Carteira:" and "▲ CSANX285 +" in r[1] and r[-1].startswith("Total: ▲")
+
+
+def test_resumo_variacao_do_dia(monkeypatch, tmp_path):
+    import positions, main
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "h.db"))
+    monkeypatch.setattr(messenger, "send", lambda t: True)
+    main.job_seed_csan3()
+    class Api:
+        def __init__(s, px): s.px = px
+        def history(s, t, r, i): return [dict(date=datetime(2026, 10, 29, 11, 0, tzinfo=TZ).timestamp(), close=s.px)]
+    r1 = positions.resumo(Api(2.40), date(2026, 10, 29))
+    assert not any(x.startswith("Hoje") for x in r1)                  # 1o dia: sem comparacao
+    r2 = positions.resumo(Api(2.30), date(2026, 10, 30))
+    assert any(x.startswith("Hoje: ▲ +R$") for x in r2)                 # acao caiu, o put subiu
+    r3 = positions.resumo(Api(2.30), date(2026, 10, 30))                # repetir no mesmo dia nao muda a base
+    assert any(x.startswith("Hoje: ▲ +R$") for x in r3)

@@ -209,13 +209,13 @@ def nivel_protegido(p, today):
 
 
 def resumo(api, today):
-    """Linhas compactas da carteira para o resumo do fim do dia."""
+    """Linhas compactas da carteira para o resumo do fim do dia, com a variacao desde o resumo anterior."""
     with database.conn() as c:
         _ensure(c)
         rows = _rows(c)
     if not rows:
         return []
-    L, ap, val = ["Carteira:"], 0.0, 0.0
+    L, ap, val, snap = ["Carteira:"], 0.0, 0.0, {}
     for p in rows:
         try:
             px, ult = _last_price(api, p["ticker"], today)
@@ -226,11 +226,28 @@ def resumo(api, today):
         est = est_option(p, px, today)
         pct = (est / p["entry"] - 1) * 100
         ap += p["qty"] * p["entry"]; val += est * p["qty"]
+        snap[p["symbol"]] = [p["qty"], round(est * p["qty"], 2)]
         L.append(f"{'▲' if pct >= 0 else '▼'} {p['symbol']} {'+' if pct >= 0 else '−'}{fmt(abs(pct), 0)}%")
-    if ap:
-        r = val - ap
-        L.append(f"Total: {'▲' if r >= 0 else '▼'} {'+' if r >= 0 else '−'}R$ {fmt(abs(r), 0)} ({'+' if r >= 0 else '−'}{fmt(abs(r / ap * 100), 0)}%) estimado")
-    return L if ap else []
+    if not ap:
+        return []
+    r = val - ap
+    L.append(f"Total: {'▲' if r >= 0 else '▼'} {'+' if r >= 0 else '−'}R$ {fmt(abs(r), 0)} ({'+' if r >= 0 else '−'}{fmt(abs(r / ap * 100), 0)}%) estimado")
+    try:    # variacao do dia: compara com o ultimo resumo anterior, so nas posicoes que ja existiam com a mesma quantidade
+        datas = json.loads(database.get_meta("cart_dates") or "[]")
+        antes = [d for d in datas if d < str(today)]
+        if antes:
+            ant = json.loads(database.get_meta("cart:" + antes[-1]) or "{}")
+            comum = [s for s in snap if s in ant and ant[s][0] == snap[s][0]]
+            if comum:
+                dif = sum(snap[s][1] - ant[s][1] for s in comum); base = sum(ant[s][1] for s in comum)
+                L.append(f"Hoje: {'▲' if dif >= 0 else '▼'} {'+' if dif >= 0 else '−'}R$ {fmt(abs(dif), 0)} ({'+' if dif >= 0 else '−'}{fmt(abs(dif / base * 100), 1)}%)")
+        database.set_meta("cart:" + str(today), json.dumps(snap))
+        if str(today) not in datas:
+            datas.append(str(today))
+        database.set_meta("cart_dates", json.dumps(datas[-30:]))
+    except Exception as e:
+        log.warning("Variacao do dia: %s", e)
+    return L
 
 
 def check(api, now_dt):
