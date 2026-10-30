@@ -305,7 +305,7 @@ def check(api, now_dt):
             flags.append("parcial")
             txt = f"🎯 REALIZAR METADE: {info}\nA ação chegou a {fmt(p['partial'])}. Vender {p['qty'] // 2} de {p['symbol']} e deixar o resto até o alvo {fmt(p['target'])}."
             prot = nivel_protegido(p, today) if est > p["entry"] else None
-            if prot:
+            if prot and ((short and prot < p["stop"]) or (not short and prot > p["stop"])):   # so sugere se apertar a saida atual
                 txt += f"\n\nProteja o resto (a opção volta ao seu preço de compra em {fmt(prot)}):\n<code>ajustar {p['symbol']} sair {str(prot).replace('.', ',')}</code>"
             msgs.append(txt)
         if "prazo" not in flags and str(today) >= p["deadline"]:
