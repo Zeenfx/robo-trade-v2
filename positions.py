@@ -147,17 +147,19 @@ def config_tz():
 
 
 def _hoje(snap, today):
-    """Linha 'Hoje' comparando com o ultimo resumo anterior (so posicoes que ja existiam com a mesma quantidade). None se nao houver base."""
+    """Linha 'Hoje' comparando com o ultimo resumo anterior (posicoes que ja existiam, na quantidade de hoje). None se nao houver base."""
     try:
         datas = json.loads(database.get_meta("cart_dates") or "[]")
         antes = [d for d in datas if d < str(today)]
         if not antes:
             return None
         ant = json.loads(database.get_meta("cart:" + antes[-1]) or "{}")
-        comum = [x for x in snap if x in ant and ant[x][0] == snap[x][0]]
+        comum = [x for x in snap if x in ant and ant[x][0] > 0]
         if not comum:
             return None
-        dif = sum(snap[x][1] - ant[x][1] for x in comum); base = sum(ant[x][1] for x in comum)
+        # valor de ontem por opcao x quantidade de hoje: parte vendida nao distorce a comparacao
+        base_x = {x: ant[x][1] / ant[x][0] * snap[x][0] for x in comum}
+        dif = sum(snap[x][1] - base_x[x] for x in comum); base = sum(base_x.values())
         return f"Hoje: {'▲' if dif >= 0 else '▼'} {'+' if dif >= 0 else '−'}R$ {fmt(abs(dif), 0)} ({'+' if dif >= 0 else '−'}{fmt(abs(dif / base * 100), 1)}%)"
     except Exception as e:
         log.warning("Variacao do dia: %s", e)
