@@ -321,7 +321,9 @@ def check(api, now_dt):
 # ---------- Telegram: leitura de comandos ----------
 HELP = ("Use: comprei TICKER QTD a PRECO (ex.: comprei CSAN3 500 a 0,44; opcional: sair 2,65)\n"
         "Opção sua, sem alerta: comprei USIMW700 200 a 0,55 sair 5,90 alvo 5,00\n"
-        "vendi CODIGO [QTD] [a PRECO] · ajustar CODIGO alvo X sair Y · posicoes · resultados")
+        "vendi CODIGO [QTD] [a PRECO] · ajustar CODIGO alvo X sair Y · posicoes · resultados · bomdia")
+
+EXTRA = {}   # comandos que disparam rotinas do main (ex.: 'bomdia' -> mensagem de abertura); preenchido pelo main
 
 
 def sub_pregoes(d, n):
@@ -427,6 +429,9 @@ def handle(text, today, api=None):
         return None
     w = t.split()
     try:
+        if t.replace(" ", "") in EXTRA:
+            EXTRA[t.replace(" ", "")]()   # a rotina envia a propria mensagem
+            return None
         if w[0] in ("comprei", "compre", "comprado", "comprou"):
             m = re.match(r"\w+\s+([a-z0-9]{4,8})\s+(\d+)\s+(?:a\s+)?([\d.,]+)((?:\s+(?:stop|sair|alvo|metade)\s+[\d.,]+)*)$", t)
             if not m:

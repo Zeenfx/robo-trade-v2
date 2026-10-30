@@ -774,3 +774,12 @@ def test_balancos(monkeypatch, tmp_path):
     iv = dict(iv=0.4, iv_rank=40, iv_pct=50)
     assert "Balanço de MGLU3 em 05/11, dentro do prazo" in messenger.alert_msg(sig, iv, opt, "", today)
     assert "Balanço" not in messenger.alert_msg(N(**dict(vars(sig), ticker="CSNA3")), iv, opt, "", today)     # CSNA3 sem data conhecida: sem aviso
+
+
+def test_extra_command(monkeypatch, tmp_path):
+    import positions
+    from datetime import date
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "x.db"))
+    hits = []
+    monkeypatch.setitem(positions.EXTRA, "bomdia", lambda: hits.append(1))
+    assert positions.handle("Bom dia", date(2026, 10, 30)) is None and hits == [1]

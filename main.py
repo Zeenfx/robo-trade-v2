@@ -461,7 +461,8 @@ def job_placar():
         log.warning("Placar: %s", e)
 
 def job_telegram_poll():
-    """Le comandos do Telegram (comprei / vendi / posicoes)."""
+    """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -477,6 +478,15 @@ def job_seed_csan3():
                                        deadline="2026-11-12", option=opt, direction="short")
     if pid and messenger.send(msg):
         database.set_meta(key, "1")
+
+def _once_key(key, fn):
+    """Roda fn uma unica vez para a chave dada (sobrevive a reinicios)."""
+    def run():
+        if database.get_meta(key):
+            return
+        database.set_meta(key, "1")
+        fn()
+    return run
 
 def _once(name, fn):
     """Roda fn uma unica vez por valor da variavel de ambiente 'name' (evita repetir diagnosticos a cada reinicio)."""
@@ -640,6 +650,8 @@ def serve():
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(job_posicoes, "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
     s.add_job(job_placar, "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
+    if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
+        s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
