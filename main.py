@@ -550,8 +550,9 @@ def job_boot_status():
         database.set_meta(key, "1")
 
 def _near_list(api, today=None):
-    """Ativos do universo a menos de 1% do nivel de 20 dias (busca candles diarios)."""
-    import report
+    """Ativos do universo a menos de 1% do nivel de 20 dias (busca candles diarios).
+    Marca na linha o balanço que cai dentro do prazo de uma operacao (mesma janela do alerta)."""
+    import report, balancos
     items = []
     for t in config.UNIVERSE:
         try:
@@ -560,7 +561,17 @@ def _near_list(api, today=None):
             continue
         if r:
             items.append((t, r))
-    return report.near_lines(items)
+    notas = {}
+    try:
+        hoje = today or now().date()
+        fim = positions.add_pregoes(hoje, config.TIME_EXIT_DAYS)
+        for t, _ in items:
+            d = balancos.entre(t, hoje, fim)
+            if d:
+                notas[t] = "balanço HOJE" if d == hoje else f"balanço {d.strftime('%d/%m')}"
+    except Exception as e:
+        log.warning("Balanço na lista de proximos rompimentos: %s", e)
+    return report.near_lines(items, notas)
 
 def job_morning():
     """09:30: robo vivo, estado da IV do mercado e ativos perto de romper."""
@@ -573,7 +584,7 @@ def job_morning():
     near = _near_list(Brapi(), now().date())
     L += (["Perto de romper (a menos de 1%):"] + near) if near else ["Nenhum ativo perto de romper."]
     if baratos:
-        L.append("IV mais barata: " + ", ".join(baratos))
+        L.append("IV barata: " + ", ".join(baratos))
     try:   # balanços de hoje ou amanha nos ativos com posicao aberta
         import balancos
         hoje = now().date(); amanha = positions.add_pregoes(hoje, 1)

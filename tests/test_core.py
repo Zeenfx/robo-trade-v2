@@ -387,7 +387,9 @@ def test_near_breakout_and_lines():
     lines = report.near_lines([("X", report.near_breakout("X", up)), ("Y", report.near_breakout("Y", down))])
     assert lines[0].startswith("▼ Y") and "máx 60,00" in lines[1] and "fechou 59,60" in lines[1]
     cont, baratos = report.iv_counts([dict(ticker="A", iv_rank=10, iv_pct=10), dict(ticker="B", iv_rank=99, iv_pct=99), dict(ticker="C", iv_rank=None, iv_pct=None)])
-    assert cont == {"cara": 1, "média": 0, "barata": 1} and baratos == ["A", "B"]
+    assert cont == {"cara": 1, "média": 0, "barata": 1} and baratos == ["A"]      # so lista quem esta de fato 'barata'
+    nl = report.near_lines([("Y", report.near_breakout("Y", down))], {"Y": "balanço 03/11"})
+    assert nl[0].endswith("· ⚠️ balanço 03/11")
 
 
 def test_morning_and_heartbeat(monkeypatch, tmp_path):
