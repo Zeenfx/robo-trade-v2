@@ -652,6 +652,8 @@ def serve():
     s.add_job(job_placar, "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
         s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
+    if now().date() == date(2026, 10, 31):   # envio unico do placar detalhado (sabado)
+        s.add_job(_once_key("send:placar:2026-10-31", lambda: (outcomes.update(Brapi(), now().date()), messenger.send(outcomes.relatorio()))), "date", run_date=now() + timedelta(seconds=60), id="send_placar")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")

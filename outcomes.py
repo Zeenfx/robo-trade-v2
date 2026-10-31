@@ -74,6 +74,51 @@ def _tz():
     return ZoneInfo(config.TZ)
 
 
+def _sim_opcao(p, r):
+    """Resultado estimado da opcao (% sobre o preco do alerta) se entrasse no alerta e saisse no nivel do resultado. None se faltar dado."""
+    try:
+        import positions
+        o, sig = p["option"], p["signal"]
+        call = sig["direction"] == "long"
+        entry = o["ask"]; K = o["strike"]
+        d0 = datetime.strptime(r["date"], "%Y-%m-%d").date()
+        exp = datetime.strptime(o["expiration"], "%Y-%m-%d").date()
+        spot0 = o.get("spot_ref") or sig["price"]
+        iv = positions.implied_vol(call, entry, spot0, K, max((exp - d0).days, 1) / 365.0)
+        exit_date = positions.add_pregoes(d0, r["days"])
+        S = sig["price"] * (1 + r["move_pct"] / 100.0 * (-1 if not call else 1))
+        q = dict(direction=sig["direction"], strike=K, expiration=o["expiration"], iv=iv)
+        val = positions.est_option(q, S, exit_date)
+        return (val / entry - 1) * 100, (val - entry) * 100
+    except Exception as e:
+        log.warning("Placar simulacao: %s", e)
+        return None
+
+
+def detalhe():
+    """Lista cada alerta resolvido (resultado, quanto a acao andou, opcao estimada) e a soma estimada por 100 opcoes."""
+    L, tot, n, favor = [], 0.0, 0, 0
+    with database.conn() as c:
+        c.execute(SCHEMA.replace("\n", " "))
+        rows = [dict(x) for x in c.execute("SELECT * FROM outcomes ORDER BY date").fetchall()]
+        pay = {(r["date"], r["ticker"], r["direction"]): json.loads(r["payload"]) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts").fetchall()}
+    nome = {"alvo": "🎯 alvo", "saida": "🛑 saída", "prazo": "⏰ prazo"}
+    for r in rows:
+        sim = _sim_opcao(pay.get((r["date"], r["ticker"], r["direction"])) or {}, r)
+        favor += 1 if r["move_pct"] > 0 else 0
+        txt = f"{'▲' if r['direction'] == 'long' else '▼'} {r['ticker']} {r['date'][8:10]}/{r['date'][5:7]} · {nome.get(r['result'], r['result'])} em {r['days']}d · ação {fmt(abs(r['move_pct']), 1)}% {'a favor' if r['move_pct'] >= 0 else 'contra'}"
+        if sim:
+            txt += f" · opção ~{'+' if sim[0] >= 0 else '−'}{fmt(abs(sim[0]), 0)}%"
+            tot += sim[1]; n += 1
+        L.append(txt)
+    if not rows:
+        return ""
+    out = ["", f"A favor: {favor} de {len(rows)} (a ação andou no sentido do alerta)", "Resolvidos:"] + L
+    if n:
+        out.append(f"Se entrasse em todos (100 opções cada): {'▲' if tot >= 0 else '▼'} {'+' if tot >= 0 else '−'}R$ {fmt(abs(tot), 0)} (estimado)")
+    return "\n".join(out)
+
+
 def relatorio(today=None):
     with database.conn() as c:
         c.execute(SCHEMA.replace("\n", " "))
@@ -97,6 +142,10 @@ def relatorio(today=None):
                 L.append(f"IV {w}: alvo em {sum(1 for r in x if r['result'] == 'alvo')} de {len(x)}")
     else:
         L.append("Placar dos alertas: ainda sem alertas resolvidos (cada um leva até 10 pregões).")
+    d = detalhe()
+    if d:
+        L.append(d)
     if abertos:
+        L.append("")
         L.append("Em andamento: " + ", ".join(abertos))
     return "\n".join(L)

@@ -656,6 +656,7 @@ def test_placar_avaliar_e_relatorio(monkeypatch, tmp_path):
     assert outcomes.update(Api(), date(2026, 10, 29)) == 1
     txt = outcomes.relatorio()
     assert "1 resolvidos" in txt and "Alvo: 1" in txt and "Puts: alvo em 1 de 1" in txt and "IV média: alvo em 1 de 1" in txt
+    assert "Resolvidos:" in txt and "▼ CSAN3 20/10 · 🎯 alvo em 2d" in txt and "A favor: 1 de 1" in txt
 
 
 def test_cadastro_de_opcao_propria(monkeypatch, tmp_path):
