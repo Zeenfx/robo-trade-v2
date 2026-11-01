@@ -784,3 +784,14 @@ def test_extra_command(monkeypatch, tmp_path):
     hits = []
     monkeypatch.setitem(positions.EXTRA, "bomdia", lambda: hits.append(1))
     assert positions.handle("Bom dia", date(2026, 10, 30)) is None and hits == [1]
+
+
+def test_jobs_nao_rodam_em_feriado(monkeypatch):
+    import main
+    from datetime import datetime
+    calls = []
+    f = main._util(lambda: calls.append(1))
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 11, 2, 9, 30, tzinfo=TZ))
+    f(); assert calls == []                                   # 02/11 = Finados: sem pregao
+    monkeypatch.setattr(main, "now", lambda: datetime(2026, 11, 3, 9, 30, tzinfo=TZ))
+    f(); assert calls == [1]

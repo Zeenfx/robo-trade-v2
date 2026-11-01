@@ -627,6 +627,17 @@ def job_status():
         for r in database.latest_status(d):
             print(r)
 
+def _util(fn):
+    """Jobs agendados nao rodam em feriado da B3 (sem pregao: evita resumo, 'bom dia' e alertas com dado velho)."""
+    import functools
+    @functools.wraps(fn)
+    def run(*a, **k):
+        if str(now().date()) in positions.FERIADOS:
+            log.info("Feriado da B3: %s nao roda", fn.__name__)
+            return
+        return fn(*a, **k)
+    return run
+
 def serve():
     from apscheduler.schedulers.blocking import BlockingScheduler
     s = BlockingScheduler(timezone=config.TZ)
@@ -635,21 +646,21 @@ def serve():
     s.add_job(job_eod, "cron", day_of_week=wk, hour=8, minute=30, id="eod", misfire_grace_time=3600, coalesce=True)
     if config.WATCHLIST_MSG and config.IV_GATE:   # com a regra B a watchlist tem todos os ativos: mensagem das 09:30 seria so ruido
         s.add_job(job_pre, "cron", day_of_week=wk, hour=9, minute=30, id="pre", misfire_grace_time=1800, coalesce=True)
-    s.add_job(job_intraday, "cron", day_of_week=wk, hour=9, minute="45-55/5", id="open5a")
-    s.add_job(job_intraday, "cron", day_of_week=wk, hour=10, minute="0,5,10", id="open5b")
-    s.add_job(job_intraday, "cron", day_of_week=wk, hour="10-17", minute="15,30,45", id="m15a")
-    s.add_job(job_intraday, "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
+    s.add_job(_util(job_intraday), "cron", day_of_week=wk, hour=9, minute="45-55/5", id="open5a")
+    s.add_job(_util(job_intraday), "cron", day_of_week=wk, hour=10, minute="0,5,10", id="open5b")
+    s.add_job(_util(job_intraday), "cron", day_of_week=wk, hour="10-17", minute="15,30,45", id="m15a")
+    s.add_job(_util(job_intraday), "cron", day_of_week=wk, hour="11-17", minute=0, id="m15b")
     s.add_job(job_bootstrap, "cron", day_of_week=wk, hour=8, minute=0, id="bootstrap_daily", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
-    s.add_job(job_morning, "cron", day_of_week=wk, hour=9, minute=30, id="morning", misfire_grace_time=1800, coalesce=True)
-    s.add_job(job_heartbeat, "cron", day_of_week=wk, hour=13, minute=0, id="heartbeat", misfire_grace_time=1800, coalesce=True)
-    s.add_job(job_summary, "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_morning), "cron", day_of_week=wk, hour=9, minute=30, id="morning", misfire_grace_time=1800, coalesce=True)
+    s.add_job(_util(job_heartbeat), "cron", day_of_week=wk, hour=13, minute=0, id="heartbeat", misfire_grace_time=1800, coalesce=True)
+    s.add_job(_util(job_summary), "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_boot_status, "date", run_date=now() + timedelta(seconds=50), id="boot_status")
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
-    s.add_job(job_posicoes, "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
-    s.add_job(job_placar, "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
+    s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
         s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
     if now().date() == date(2026, 10, 31):   # envio unico do placar detalhado (sabado)
