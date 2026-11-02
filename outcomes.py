@@ -88,6 +88,7 @@ def _sim_opcao(p, r):
         exit_date = positions.add_pregoes(d0, r["days"])
         S = sig["price"] * (1 + r["move_pct"] / 100.0 * (-1 if not call else 1))
         q = dict(direction=sig["direction"], strike=K, expiration=o["expiration"], iv=iv)
+        entry = positions.est_option(q, sig["price"], d0)       # compra ao preco da acao no alerta (o ask da brapi e do fechamento anterior)
         val = positions.est_option(q, S, exit_date)
         return (val / entry - 1) * 100, (val - entry) * 100
     except Exception as e:

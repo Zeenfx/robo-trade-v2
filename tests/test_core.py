@@ -795,3 +795,12 @@ def test_jobs_nao_rodam_em_feriado(monkeypatch):
     f(); assert calls == []                                   # 02/11 = Finados: sem pregao
     monkeypatch.setattr(main, "now", lambda: datetime(2026, 11, 3, 9, 30, tzinfo=TZ))
     f(); assert calls == [1]
+
+
+def test_placar_simulacao_saida_perde():
+    import outcomes
+    p = dict(signal=dict(direction="short", price=19.60), option=dict(ask=1.80, strike=21.0, expiration="2026-12-18", spot_ref=20.00))
+    r = dict(date="2026-10-28", days=1, move_pct=-1.6)          # acao foi 1,6% contra: a opcao tem de perder, mesmo com a acao ja abaixo do fechamento anterior
+    assert outcomes._sim_opcao(p, r)[0] < 0
+    r = dict(date="2026-10-28", days=3, move_pct=7.0)
+    assert outcomes._sim_opcao(p, r)[0] > 0
