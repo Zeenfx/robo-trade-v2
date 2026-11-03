@@ -103,7 +103,7 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:05
+        if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:30
             messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas()))
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
@@ -654,13 +654,13 @@ def serve():
     s.add_job(job_bootstrap, "date", run_date=now() + timedelta(seconds=10), id="bootstrap")
     s.add_job(_util(job_morning), "cron", day_of_week=wk, hour=9, minute=30, id="morning", misfire_grace_time=1800, coalesce=True)
     s.add_job(_util(job_heartbeat), "cron", day_of_week=wk, hour=13, minute=0, id="heartbeat", misfire_grace_time=1800, coalesce=True)
-    s.add_job(_util(job_summary), "cron", day_of_week=wk, hour=18, minute=5, id="summary", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_summary), "cron", day_of_week=wk, hour=18, minute=30, id="summary", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_boot_status, "date", run_date=now() + timedelta(seconds=50), id="boot_status")
     s.add_job(job_hello, "date", run_date=now() + timedelta(seconds=30), id="hello")
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
-    s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=20, id="placar", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=45, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
         s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
     if now().date() == date(2026, 10, 31):   # envio unico do placar detalhado (sabado)
