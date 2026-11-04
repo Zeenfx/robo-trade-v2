@@ -67,7 +67,7 @@ IV_MAX_DTE = 70
 
 # --- Gatilho grafico ---
 BREAKOUT_LOOKBACK = 20       # rompimento de max/min dos ultimos N pregoes
-VR_MIN = 1.5                 # volume relativo minimo (ritmo do dia vs media 20d)
+VR_MIN = float(os.getenv("VR_MIN", "1.2"))   # volume relativo minimo (ritmo do dia vs media 20d); 1,2x desde 04/11 (teste de 1 mes: melhor que 1,5x e 1,0x)
 M15_CONFIRM_CLOSES = 2       # fechamentos M15 consecutivos alem do nivel
 ATR_PERIOD = 14
 STOP_ATR_BUFFER = 0.5        # stop = nivel rompido -/+ 0.5 ATR
