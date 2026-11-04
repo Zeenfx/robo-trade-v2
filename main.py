@@ -449,6 +449,57 @@ def job_diag_semanais():
     if enviado:
         database.set_meta(key, "1")
 
+def job_diag_variacao():
+    """Teste (so leitura): para cada sinal de hoje, a trajetoria da acao ate a hora do alerta (abertura, nivel, 1o candle alem do nivel, preco no alerta)."""
+    hoje = now().date()
+    with database.conn() as c_:
+        rows = c_.execute("SELECT ticker, direction, ts, payload FROM alerts WHERE date=? ORDER BY ts", (str(hoje),)).fetchall()
+    if not rows:
+        messenger.send("Variação até o alerta: nenhum sinal registrado hoje.")
+        return
+    api, L = Brapi(), []
+    for r in rows:
+        t, d = r["ticker"], r["direction"]
+        p = json.loads(r["payload"])
+        sig = p.get("signal") or {}
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = [c for c in api.history(t, "5d", "15m") if datetime.fromtimestamp(c["date"], TZ).date() == hoje]
+            ontem = [c for c in daily if datetime.fromtimestamp(c["date"], TZ).date() < hoje]
+            if not m15 or not ontem:
+                L.append(f"{t}: sem candles de hoje")
+                continue
+            prev = ontem[-1]["close"]
+            lvl = sig.get("level")
+            tsa = datetime.fromisoformat(r["ts"])
+            fecha = lambda c: datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15)
+            ate = [c for c in m15 if fecha(c) <= tsa + timedelta(minutes=1)] or m15[:1]
+            px_alerta = ate[-1]["close"]
+            cruz = next((c for c in m15 if lvl and ((d == "short" and c["close"] < lvl) or (d == "long" and c["close"] > lvl))), None)
+            pct = lambda a, b: (a / b - 1) * 100
+            seta = "▲" if d == "long" else "▼"
+            ln = [f"{t} {seta} · alerta {tsa.strftime('%H:%M')} · {'com opção' if p.get('option') else 'sem opção'}{' · RUIM' if p.get('ruim') else ''}",
+                  f"Ontem fechou {fmt_(prev)} · abriu {fmt_(m15[0]['open'])} ({sgn_(pct(m15[0]['open'], prev))}) · no alerta {fmt_(px_alerta)} ({sgn_(pct(px_alerta, prev))} no dia)"]
+            if lvl:
+                if cruz:
+                    hc = fecha(cruz)
+                    ln.append(f"Nível {fmt_(lvl)} · 1º candle além do nível: {hc.strftime('%H:%M')} a {fmt_(cruz['close'])}")
+                    mais = pct(px_alerta, cruz["close"]) * (-1 if d == "short" else 1)
+                    ln.append(f"Entre aquele candle e o alerta: {(tsa - hc).total_seconds() / 60:.0f} min · a ação andou mais {sgn_(mais)} a favor")
+                else:
+                    ln.append(f"Nível {fmt_(lvl)} · nenhum candle fechou além do nível")
+            L.append("\n".join(ln))
+        except Exception as e:
+            L.append(f"{t}: erro {type(e).__name__} {str(e)[:60]}")
+    msg = "Variação até a hora do alerta (hoje)\n\n" + "\n\n".join(L)
+    messenger.send(msg)
+
+def fmt_(x, n=2):
+    return messenger.fmt(x, n)
+
+def sgn_(v):
+    return ("+" if v >= 0 else "−") + messenger.fmt(abs(v), 1) + "%"
+
 def job_posicoes():
     """Confere stop/parcial/alvo/prazo das posicoes abertas (so avisa; nunca opera)."""
     try:
@@ -468,7 +519,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -674,6 +725,8 @@ def serve():
         s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
     if now().date() == date(2026, 10, 31):   # envio unico do placar detalhado (sabado)
         s.add_job(_once_key("send:placar:2026-10-31", lambda: (outcomes.update(Brapi(), now().date()), messenger.send(outcomes.relatorio()))), "date", run_date=now() + timedelta(seconds=60), id="send_placar")
+    if now().date() == date(2026, 11, 4):   # teste unico: variacao ate a hora do alerta
+        s.add_job(_once_key("diag_var:2026-11-04", job_diag_variacao), "date", run_date=now() + timedelta(seconds=60), id="diag_var")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
