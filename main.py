@@ -503,6 +503,66 @@ def job_diag_variacao():
     msg = "Variação até a hora do alerta (hoje)\n\n" + "\n\n".join(L)
     messenger.send(msg)
 
+def job_diag_atrasos():
+    """Teste (so leitura): em todos os alertas ja enviados, quanto a acao andou entre o 1o fechamento alem do nivel e o alerta, e quando o sinal sairia com volume minimo menor."""
+    with database.conn() as c_:
+        rows = c_.execute("SELECT date, ticker, direction, ts, payload FROM alerts ORDER BY date, ts").fetchall()
+    api, cache, L, tot = Brapi(), {}, [], []
+    orig = config.VR_MIN
+    try:
+        for r in rows:
+            t, d = r["ticker"], r["direction"]
+            p = json.loads(r["payload"])
+            sig = p.get("signal") or {}
+            lvl = sig.get("level")
+            dia = date.fromisoformat(r["date"])
+            tag = f"{r['date'][8:]}/{r['date'][5:7]} {t}"
+            try:
+                if t not in cache:
+                    cache[t] = (api.history(t, "3mo", "1d"), api.history(t, "1mo", "15m"))
+                daily, all15 = cache[t]
+                m15 = [c for c in all15 if datetime.fromtimestamp(c["date"], TZ).date() == dia]
+                if not m15 or not lvl:
+                    L.append(f"{tag}: sem candles M15")
+                    continue
+                tsa = datetime.fromisoformat(r["ts"])
+                fecha = lambda c: datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15)
+                cruz = next((c for c in m15 if (c["close"] < lvl if d == "short" else c["close"] > lvl)), None)
+                if not cruz:
+                    L.append(f"{tag}: sem candle além do nível")
+                    continue
+                ate = [c for c in m15 if fecha(c) <= tsa + timedelta(minutes=1)] or m15[:1]
+                px_a = ate[-1]["close"]
+                sg = -1 if d == "short" else 1
+                a = sg * (px_a / cruz["close"] - 1) * 100
+                i0 = m15.index(cruz)
+                def quando(vr):
+                    config.VR_MIN = vr
+                    for k in range(i0, len(m15)):
+                        hk = fecha(m15[k])
+                        if analyzer.explain(d, daily, m15[:k + 1], hk).startswith("SINAL"):
+                            return hk
+                    return None
+                partes = []
+                for vr in (1.2, 1.0):
+                    hk = quando(vr)
+                    partes.append(f"{messenger.fmt(vr, 1)}x→{hk.strftime('%H:%M') if hk else '-'}")
+                atraso = (tsa - fecha(cruz)).total_seconds() / 60
+                tot.append((a, atraso))
+                seta = "▲" if d == "long" else "▼"
+                L.append(f"{tag} {seta}: 1º fecho além {fecha(cruz).strftime('%H:%M')} a {fmt_(cruz['close'])} · alerta {tsa.strftime('%H:%M')} a {fmt_(px_a)} · atraso {atraso:.0f} min · já andou {sgn_(a)} · {' '.join(partes)}")
+            except Exception as e:
+                L.append(f"{tag}: erro {type(e).__name__} {str(e)[:50]}")
+    finally:
+        config.VR_MIN = orig
+    cab = [f"Atraso dos alertas ({len(rows)} no total)", "Hora em que o sinal sairia com volume mínimo de 1,2x ou 1,0x (hoje 1,5x)", ""]
+    if tot:
+        grandes = sum(1 for a, _ in tot if a >= 1.0)
+        cab.append(f"Já andou ≥1% a favor antes do alerta: {grandes} de {len(tot)}")
+        cab.append(f"Mediana do que já andou: {sgn_(sorted(a for a, _ in tot)[len(tot) // 2])} · atraso mediano: {sorted(x for _, x in tot)[len(tot) // 2]:.0f} min")
+        cab.append("")
+    messenger.send("\n".join(cab + L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -528,7 +588,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -736,6 +796,7 @@ def serve():
         s.add_job(_once_key("send:placar:2026-10-31", lambda: (outcomes.update(Brapi(), now().date()), messenger.send(outcomes.relatorio()))), "date", run_date=now() + timedelta(seconds=60), id="send_placar")
     if now().date() == date(2026, 11, 4):   # teste unico: variacao ate a hora do alerta
         s.add_job(_once_key("diag_var2:2026-11-04", job_diag_variacao), "date", run_date=now() + timedelta(seconds=60), id="diag_var")
+        s.add_job(_once_key("diag_atr:2026-11-04", job_diag_atrasos), "date", run_date=now() + timedelta(seconds=75), id="diag_atr")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
