@@ -804,3 +804,19 @@ def test_placar_simulacao_saida_perde():
     assert outcomes._sim_opcao(p, r)[0] < 0
     r = dict(date="2026-10-28", days=3, move_pct=7.0)
     assert outcomes._sim_opcao(p, r)[0] > 0
+
+
+def test_quantidade_sugerida_e_ruim_fora_do_chat(monkeypatch, tmp_path):
+    from types import SimpleNamespace as NS
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "q.db"))
+    sig = NS(ticker="RAIL3", direction="short", price=13.30, level=13.5, stop=14.4, target=12.54, atr=.3, vr=1, trend_d1="", h1_note="", trigger_m15="", space="medio")
+    opt = dict(symbol="RAILX140", strike=14.08, expiration="2026-12-18", ask=0.92, bid=0.9, iv=0.45, dte=45, lot=100, last_only=False, spot_ref=13.4)
+    msg = messenger.alert_msg(sig, dict(iv_rank=40, iv_pct=50), opt, "", date(2026, 11, 3), None, None)
+    import re
+    m = re.search(r"Quantidade: até (\d+) · perda no 'Sair se' ~R\$ (\d+)", msg)
+    assert m and int(m.group(1)) % 100 == 0 and int(m.group(2)) <= config.MAX_LOSS_TRADE
+    # alertas RUIM ficam registrados mas contam fora dos enviados
+    database.save_alert("2026-11-03", "SUZB3", "long", "2026-11-03T12:00:00", {"signal": {}, "option": dict(symbol="X"), "ruim": True})
+    database.save_alert("2026-11-03", "RAIL3", "short", "2026-11-03T12:05:00", {"signal": {}, "option": dict(symbol="Y"), "ruim": False})
+    assert database.ruim_signals("2026-11-03") == [("SUZB3", "long")]
+    assert database.count_alerts("2026-11-03", True) == 1

@@ -103,11 +103,17 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        if opt:   # sem opcao liquida nao vira alerta: fica registrado e aparece no resumo das 18:30
-            messenger.send(messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas()))
+        ruim = False
+        if opt:   # sem opcao liquida ou com veredito RUIM nao vira alerta: fica registrado e aparece no resumo das 18:30
+            msg = messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas())
+            ruim = "❌ RUIM" in msg
+            if ruim:
+                log.info("%s %s: veredito RUIM; fica para o resumo", s.ticker, s.direction)
+            else:
+                messenger.send(msg)
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
-        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "ruim": ruim, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
@@ -531,6 +537,9 @@ def job_summary():
     sem = database.no_option_signals(hoje)
     if sem:
         L.append("Sinais sem opção: " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" + (f" ({why.lower()})" if why else "") for t, d, why in sem))
+    ruim = database.ruim_signals(hoje)
+    if ruim:
+        L.append("Alertas ❌ RUIM (não enviados): " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in ruim))
     try:
         near = _near_list(Brapi())
         if near:

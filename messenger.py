@@ -1,5 +1,6 @@
 """Telegram."""
 import html, logging, requests
+from datetime import datetime
 import config
 
 log = logging.getLogger("tg")
@@ -93,6 +94,25 @@ def _iv_word(rank, pct):
     import iv_filter
     return iv_filter.iv_tag(rank, pct).split(" ", 1)[1]    # barata | média | cara
 
+def _quantidade(sig, opt, teto, stop, today):
+    """Quantidade (multiplo de 100) em que a perda estimada no 'Sair se' fica dentro de MAX_LOSS_TRADE. Usa o teto de compra (hipotese mais cara)."""
+    try:
+        import positions
+        call = sig.direction == "long"
+        T = max((datetime.strptime(opt["expiration"], "%Y-%m-%d").date() - today).days, 1) / 365.0
+        iv = positions.implied_vol(call, teto, sig.price, opt["strike"], T)
+        q = dict(direction=sig.direction, strike=opt["strike"], expiration=opt["expiration"], iv=iv)
+        perda = teto - positions.est_option(q, stop, positions.add_pregoes(today, 1))
+        if perda <= 0.005:
+            return None
+        n = int(config.MAX_LOSS_TRADE / perda // 100 * 100)
+        if n < 100:
+            return f"Quantidade: 100 · perda no 'Sair se' ~R$ {fmt(perda * 100, 0)} (acima de R$ {fmt(config.MAX_LOSS_TRADE, 0)})"
+        return f"Quantidade: até {n} · perda no 'Sair se' ~R$ {fmt(n * perda, 0)}"
+    except Exception:
+        return None
+
+
 def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
     """Mensagem enxuta para celular: opcao, compra ate, alvo e stop (nivel da acao), prazo e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
@@ -132,6 +152,8 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
     if today:
         import positions
         L.append(f"Prazo: {positions.add_pregoes(today, config.TIME_EXIT_DAYS).strftime('%d/%m')}")
+        q = _quantidade(sig, opt, teto, stop, today)
+        if q: L.append(q)
     _, _, covers = _empate(sig, opt)
     bom_iv = ivw != "cara"
     tag = "✅ BOM" if covers and bom_iv else ("❌ RUIM" if not covers and not bom_iv else "⚠️ NEUTRO")
