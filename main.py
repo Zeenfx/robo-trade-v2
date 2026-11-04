@@ -488,7 +488,16 @@ def job_diag_variacao():
                     ln.append(f"Entre aquele candle e o alerta: {(tsa - hc).total_seconds() / 60:.0f} min · a ação andou mais {sgn_(mais)} a favor")
                 else:
                     ln.append(f"Nível {fmt_(lvl)} · nenhum candle fechou além do nível")
-            L.append("\n".join(ln))
+            if cruz:   # repete o teste de cada regra a cada candle, do 1o fechamento alem do nivel ate o alerta
+                ln.append("Candle a candle (hora de fechamento · preço · o que bloqueava):")
+                i0 = m15.index(cruz)
+                for k in range(i0, len(m15)):
+                    c = m15[k]
+                    hk = fecha(c)
+                    if hk > tsa + timedelta(minutes=1):
+                        break
+                    ln.append(f"{hk.strftime('%H:%M')} · {fmt_(c['close'])} · {analyzer.explain(d, daily, m15[:k + 1], hk)}")
+            L.append("\n".join(ln[:30]))
         except Exception as e:
             L.append(f"{t}: erro {type(e).__name__} {str(e)[:60]}")
     msg = "Variação até a hora do alerta (hoje)\n\n" + "\n\n".join(L)
@@ -726,7 +735,7 @@ def serve():
     if now().date() == date(2026, 10, 31):   # envio unico do placar detalhado (sabado)
         s.add_job(_once_key("send:placar:2026-10-31", lambda: (outcomes.update(Brapi(), now().date()), messenger.send(outcomes.relatorio()))), "date", run_date=now() + timedelta(seconds=60), id="send_placar")
     if now().date() == date(2026, 11, 4):   # teste unico: variacao ate a hora do alerta
-        s.add_job(_once_key("diag_var:2026-11-04", job_diag_variacao), "date", run_date=now() + timedelta(seconds=60), id="diag_var")
+        s.add_job(_once_key("diag_var2:2026-11-04", job_diag_variacao), "date", run_date=now() + timedelta(seconds=60), id="diag_var")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")

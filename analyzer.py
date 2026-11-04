@@ -75,3 +75,38 @@ def analyze(ticker, daily, m15, now):
     h1_note = f"{len(h1)} candles M15 no dia; preco {'acima' if direction=='long' else 'abaixo'} do nivel desde o rompimento"
     trig = f"{config.M15_CONFIRM_CLOSES} fechamentos M15 {'acima' if direction=='long' else 'abaixo'} de {level:.2f}".replace(".", ",")
     return Signal(ticker, direction, price, level, stop, target, a, vr, trend_d1(hist), h1_note, trig, space)
+
+
+def explain(direction, daily, m15, now):
+    """Diagnostico (so leitura): por que analyze() nao geraria sinal neste instante, para a direcao dada. Retorna texto curto ('SINAL' se geraria)."""
+    today = now.date()
+    hist = [d for d in daily if datetime.fromtimestamp(d["date"], now.tzinfo).date() < today]
+    m_today = [m for m in m15 if datetime.fromtimestamp(m["date"], now.tzinfo).date() == today]
+    if len(hist) < config.BREAKOUT_LOOKBACK + 1 or not m_today:
+        return "sem histórico"
+    window = hist[-config.BREAKOUT_LOOKBACK:]
+    hi, lo = max(d["high"] for d in window), min(d["low"] for d in window)
+    a = atr(hist)
+    if not a:
+        return "sem ATR"
+    long_ = direction == "long"
+    level = hi if long_ else lo
+    beyond = [(m["close"] > level) if long_ else (m["close"] < level) for m in m_today]
+    n = 0
+    for b in reversed(beyond):
+        if not b: break
+        n += 1
+    if n < config.M15_CONFIRM_CLOSES:
+        return f"{n} fecho(s) além do nível (precisa {config.M15_CONFIRM_CLOSES})"
+    price = m_today[-1]["close"]
+    vol_today = sum(m.get("volume") or 0 for m in m_today)
+    avg_vol = sum(d["volume"] for d in window if d.get("volume")) / max(1, sum(1 for d in window if d.get("volume")))
+    vr = vol_today / (avg_vol * session_fraction(now)) if avg_vol else 0
+    if vr < config.VR_MIN:
+        return f"volume {vr:.1f}x (precisa {config.VR_MIN}x)".replace(".", ",")
+    sgn = 1 if long_ else -1
+    stop = level - sgn * config.STOP_ATR_BUFFER * a
+    risk = abs(price - stop)
+    if risk <= 0 or risk > config.MAX_STOP_ATR * a:
+        return f"stop longe: {risk / a:.1f} ATR (máx {config.MAX_STOP_ATR})".replace(".", ",")
+    return f"SINAL (volume {vr:.1f}x)".replace(".", ",")

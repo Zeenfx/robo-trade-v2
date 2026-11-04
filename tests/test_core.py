@@ -1,5 +1,5 @@
 import os, sys, tempfile
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
@@ -820,3 +820,14 @@ def test_quantidade_sugerida_e_ruim_fora_do_chat(monkeypatch, tmp_path):
     database.save_alert("2026-11-03", "RAIL3", "short", "2026-11-03T12:05:00", {"signal": {}, "option": dict(symbol="Y"), "ruim": False})
     assert database.ruim_signals("2026-11-03") == [("SUZB3", "long")]
     assert database.count_alerts("2026-11-03", True) == 1
+
+
+def test_explain_mostra_o_que_bloqueia():
+    base = datetime(2026, 11, 4, 10, 0, tzinfo=TZ)
+    daily = [dict(date=(base - timedelta(days=30 - k)).timestamp(), close=50.7, open=50.5, high=51.2, low=49.15, volume=1_000_000) for k in range(30)]
+    def m(k, close, vol): return dict(date=(base + timedelta(minutes=15 * k)).timestamp(), open=close, close=close, high=close, low=close, volume=vol)
+    agora = base + timedelta(minutes=15 * 3)
+    assert "0 fecho" in analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 49.5, 1), m(2, 49.6, 1), m(3, 50.0, 1)], agora)
+    assert "1 fecho" in analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 50.0, 1), m(3, 49.0, 1)], agora)
+    assert "volume" in analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 49.0, 1), m(3, 49.0, 1)], agora)
+    assert analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 49.0, 500_000), m(3, 49.0, 500_000)], agora).startswith("SINAL")
