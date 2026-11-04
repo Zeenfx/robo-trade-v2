@@ -563,6 +563,63 @@ def job_diag_atrasos():
         cab.append("")
     messenger.send("\n".join(cab + L))
 
+def _replay_vr(daily, m15, t, vr, ate_dia):
+    """Reexecuta analyze() a cada candle de cada dia (ate ate_dia, exclusive) com volume minimo vr. Retorna {(dia, direcao): sinal dict + hora}."""
+    out, orig = {}, config.VR_MIN
+    config.VR_MIN = vr
+    try:
+        dias = sorted({datetime.fromtimestamp(c["date"], TZ).date() for c in m15})
+        for dia in dias:
+            if dia >= ate_dia:
+                continue
+            idx = [i for i, c in enumerate(m15) if datetime.fromtimestamp(c["date"], TZ).date() == dia]
+            for i in idx:
+                hk = datetime.fromtimestamp(m15[i]["date"], TZ) + timedelta(minutes=15)
+                s = analyzer.analyze(t, daily, m15[:i + 1], hk)
+                if s and (dia, s.direction) not in out:
+                    d = s.dict(); d["hora"] = hk.strftime("%H:%M")
+                    out[(dia, s.direction)] = d
+    finally:
+        config.VR_MIN = orig
+    return out
+
+def job_diag_volume():
+    """Teste (so leitura): refaz o ultimo mes nos ativos do universo com volume minimo 1,5x / 1,2x / 1,0x e compara resultado (stop/alvo/prazo na acao)."""
+    api, hoje = Brapi(), now().date()
+    VRS = (1.5, 1.2, 1.0)
+    res = {v: {} for v in VRS}
+    erros = 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = api.history(t, "1mo", "15m")
+            for v in VRS:
+                for (dia, dr), sg in _replay_vr(daily, m15, t, v, hoje).items():
+                    bars = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() > dia]
+                    r = outcomes.avaliar(sg, bars)
+                    res[v][(t, dia, dr)] = (sg, r)
+        except Exception as e:
+            erros += 1
+            log.warning("diag_volume %s: %s", t, e)
+    def resumo(itens):
+        n = len(itens)
+        fech = [r for _, r in itens if r]
+        alvo = sum(1 for r in fech if r[0] == "alvo"); saida = sum(1 for r in fech if r[0] == "saida"); prazo = sum(1 for r in fech if r[0] == "prazo")
+        med = sum(r[2] for r in fech) / len(fech) if fech else 0
+        return f"{n} sinais · alvo {alvo} · saída {saida} · prazo {prazo} · abertos {n - len(fech)} · ação média {sgn_(med)} por sinal"
+    L = [f"Teste de volume mínimo (último mês, {len(config.UNIVERSE) - erros} ativos; sem filtro de IV/opção/atraso)", ""]
+    for v in VRS:
+        L.append(f"Volume {messenger.fmt(v, 1)}x: {resumo(list(res[v].values()))}")
+    for v in VRS[1:]:
+        novos = [x for k, x in res[v].items() if k not in res[1.5]]
+        iguais = [k for k in res[v] if k in res[1.5]]
+        L += ["", f"Com {messenger.fmt(v, 1)}x:", f"  Alertas novos (dias que hoje não alertariam): {resumo(novos)}"]
+        ant = [res[v][k] for k in iguais if res[v][k][0]["hora"] != res[1.5][k][0]["hora"]]
+        ant15 = [res[1.5][k] for k in iguais if res[v][k][0]["hora"] != res[1.5][k][0]["hora"]]
+        L.append(f"  Mesmos alertas, mas saindo antes ({len(ant)}): com {messenger.fmt(v, 1)}x {resumo(ant)}")
+        L.append(f"  Esses mesmos com 1,5x: {resumo(ant15)}")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -588,7 +645,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -797,6 +854,7 @@ def serve():
     if now().date() == date(2026, 11, 4):   # teste unico: variacao ate a hora do alerta
         s.add_job(_once_key("diag_var2:2026-11-04", job_diag_variacao), "date", run_date=now() + timedelta(seconds=60), id="diag_var")
         s.add_job(_once_key("diag_atr:2026-11-04", job_diag_atrasos), "date", run_date=now() + timedelta(seconds=75), id="diag_atr")
+        s.add_job(_once_key("diag_vol:2026-11-04", job_diag_volume), "date", run_date=now() + timedelta(seconds=90), id="diag_vol")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
