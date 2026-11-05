@@ -645,6 +645,20 @@ def job_niveis():
         L.append(f"{t} · {fmt_(px)} · {lado}" + (f" (mín {fmt_(lo)} a {messenger.fmt(dn, 1)}%)" if up <= dn else f" (máx {fmt_(hi)} a {messenger.fmt(up, 1)}%)") if t == "AXIA3" else f"{t} · {fmt_(px)} · {lado}")
     messenger.send("\n".join(L))
 
+def job_explicar(ticker="USIM5", direction="short"):
+    """Comando 'usim5' (so leitura): candle a candle de hoje, o que bloqueia o sinal agora."""
+    api, hoje = Brapi(), now().date()
+    daily = api.history(ticker, "3mo", "1d")
+    m15 = [c for c in api.history(ticker, "5d", "15m") if datetime.fromtimestamp(c["date"], TZ).date() == hoje]
+    if not m15:
+        messenger.send(f"{ticker}: sem candles de hoje.")
+        return
+    L = [f"{ticker} {'▼' if direction == 'short' else '▲'} hoje, candle a candle (hora de fechamento · preço · o que bloqueia):"]
+    for k, c in enumerate(m15):
+        hk = datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15)
+        L.append(f"{hk.strftime('%H:%M')} · {fmt_(c['close'])} · {analyzer.explain(direction, daily, m15[:k + 1], hk)}")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -670,7 +684,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -882,6 +896,7 @@ def serve():
         s.add_job(_once_key("diag_vol:2026-11-04", job_diag_volume), "date", run_date=now() + timedelta(seconds=90), id="diag_vol")
     if now().date() == date(2026, 11, 5):   # envio unico: distancia ate o nivel (AXIA3 e vizinhos)
         s.add_job(_once_key("niveis:2026-11-05", job_niveis), "date", run_date=now() + timedelta(seconds=75), id="niveis_once")
+        s.add_job(_once_key("explicar:USIM5:2026-11-05", job_explicar), "date", run_date=now() + timedelta(seconds=85), id="explicar_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
