@@ -762,6 +762,47 @@ def job_diag_regras():
     L += ["", "Para empatar, o alvo precisa sair em ~20% dos sinais fechados."]
     messenger.send("\n".join(L))
 
+def job_diag_filtros():
+    """Comando 'filtros' (so leitura): no mesmo periodo dos alertas reais, compara os sinais que viraram alerta enviado com os descartados (sem opcao, RUIM, fora da watchlist ou ja alertado), e puts x calls."""
+    with database.conn() as c_:
+        al = c_.execute("SELECT date, ticker, direction, payload FROM alerts ORDER BY date").fetchall()
+    if not al:
+        messenger.send("Filtros: sem alertas registrados.")
+        return
+    chave = {}
+    for r in al:
+        p = json.loads(r["payload"])
+        chave[(r["date"], r["ticker"], r["direction"])] = "enviado" if (p.get("option") and not p.get("ruim")) else "registrado, não enviado (sem opção ou RUIM)"
+    inicio = date.fromisoformat(al[0]["date"])
+    api, hoje = Brapi(), now().date()
+    grupos, lados, erros = {}, {"put": [], "call": []}, 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = api.history(t, "1mo", "15m")
+            for (dia, dr), sg in _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje).items():
+                if dia < inicio:
+                    continue
+                bars = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() > dia]
+                res = outcomes.avaliar(sg, bars)
+                g = chave.get((str(dia), t, dr), "não virou alerta (fora da watchlist, sem opção líquida ou já alertado)")
+                grupos.setdefault(g, []).append(res)
+                lados["call" if dr == "long" else "put"].append(res)
+        except Exception as e:
+            erros += 1
+            log.warning("diag_filtros %s: %s", t, e)
+    def linha(nome, itens):
+        fech = [r for r in itens if r]
+        a = sum(1 for r in fech if r[0] == "alvo"); sd = sum(1 for r in fech if r[0] == "saida")
+        m = sum(r[2] for r in fech) / len(fech) if fech else 0
+        tx = f"{a / len(fech) * 100:.0f}%" if fech else "-"
+        return f"{nome}: {len(itens)} sinais · alvo {a} ({tx}) · saída {sd} · abertos {len(itens) - len(fech)} · ação média {sgn_(m)}"
+    L = [f"Sinais do teste desde {inicio.strftime('%d/%m')} (mesma regra de hoje, preço do sinal)", ""]
+    for g in sorted(grupos):
+        L.append(linha(g.capitalize(), grupos[g]))
+    L += ["", linha("Puts", lados["put"]), linha("Calls", lados["call"]), "", "Para empatar, o alvo precisa sair em ~20% dos fechados na ação."]
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -787,7 +828,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1003,6 +1044,7 @@ def serve():
     if now().date() == date(2026, 11, 6):   # envio unico: resultados dos alertas por IV/veredito e teste de stop mais largo
         s.add_job(_once_key("resultados:2026-11-06", job_diag_resultados), "date", run_date=now() + timedelta(seconds=80), id="resultados_once")
         s.add_job(_once_key("regras:2026-11-06", job_diag_regras), "date", run_date=now() + timedelta(seconds=85), id="regras_once")
+        s.add_job(_once_key("filtros:2026-11-06", job_diag_filtros), "date", run_date=now() + timedelta(seconds=90), id="filtros_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
