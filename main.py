@@ -704,6 +704,64 @@ def job_diag_resultados():
         L.append(linha(f"IV {w}", [i for i in itens if i["iv"] == w], "largo"))
     messenger.send("\n".join(L))
 
+def _replay_conf(daily, m15, t, conf, ate_dia):
+    """Como _replay_vr, mas com 'conf' fechamentos M15 de confirmacao (volume minimo vigente)."""
+    out, orig = {}, config.M15_CONFIRM_CLOSES
+    config.M15_CONFIRM_CLOSES = conf
+    try:
+        for dia in sorted({datetime.fromtimestamp(c["date"], TZ).date() for c in m15}):
+            if dia >= ate_dia:
+                continue
+            for i, c in enumerate(m15):
+                if datetime.fromtimestamp(c["date"], TZ).date() != dia:
+                    continue
+                hk = datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15)
+                sg = analyzer.analyze(t, daily, m15[:i + 1], hk)
+                if sg and (dia, sg.direction) not in out:
+                    d = sg.dict(); d["hora"] = hk.strftime("%H:%M")
+                    out[(dia, sg.direction)] = d
+    finally:
+        config.M15_CONFIRM_CLOSES = orig
+    return out
+
+def job_diag_regras():
+    """Comando 'regras' (so leitura): ultimo mes nos ativos do universo com variacoes da regra de entrada; compara stop/alvo na acao."""
+    api, hoje = Brapi(), now().date()
+    nomes = ["Hoje (2 fechamentos)", "3 fechamentos M15", "4 fechamentos M15", "Tendência diária a favor", "Fechou ontem a <1% do nível"]
+    res = {n: [] for n in nomes}
+    erros = 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d")
+            m15 = api.history(t, "1mo", "15m")
+            base = _replay_conf(daily, m15, t, 2, hoje)
+            conj = {nomes[0]: base, nomes[1]: _replay_conf(daily, m15, t, 3, hoje), nomes[2]: _replay_conf(daily, m15, t, 4, hoje)}
+            conj[nomes[3]] = {k: v for k, v in base.items() if (("alta" in v["trend_d1"]) if k[1] == "long" else ("baixa" in v["trend_d1"]))}
+            def perto(k, v):
+                ant = [d for d in daily if datetime.fromtimestamp(d["date"], TZ).date() < k[0]]
+                if not ant:
+                    return False
+                c = ant[-1]["close"]
+                return abs(c / v["level"] - 1) * 100 < 1.0
+            conj[nomes[4]] = {k: v for k, v in base.items() if perto(k, v)}
+            for n, sinais in conj.items():
+                for (dia, dr), sg in sinais.items():
+                    bars = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() > dia]
+                    res[n].append(outcomes.avaliar(sg, bars))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_regras %s: %s", t, e)
+    L = [f"Teste de regras de entrada (último mês, {len(config.UNIVERSE) - erros} ativos; volume 1,2x; sem filtro de IV/opção)", ""]
+    for n in nomes:
+        itens = res[n]
+        fech = [r for r in itens if r]
+        a = sum(1 for r in fech if r[0] == "alvo"); sd = sum(1 for r in fech if r[0] == "saida"); pz = sum(1 for r in fech if r[0] == "prazo")
+        m = sum(r[2] for r in fech) / len(fech) if fech else 0
+        tx = f"{a / len(fech) * 100:.0f}%" if fech else "-"
+        L.append(f"{n}: {len(itens)} sinais · alvo {a} ({tx}) · saída {sd} · prazo {pz} · abertos {len(itens) - len(fech)} · ação média {sgn_(m)}")
+    L += ["", "Para empatar, o alvo precisa sair em ~20% dos sinais fechados."]
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -729,7 +787,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -944,6 +1002,7 @@ def serve():
         s.add_job(_once_key("explicar:USIM5:2026-11-05", job_explicar), "date", run_date=now() + timedelta(seconds=85), id="explicar_once")
     if now().date() == date(2026, 11, 6):   # envio unico: resultados dos alertas por IV/veredito e teste de stop mais largo
         s.add_job(_once_key("resultados:2026-11-06", job_diag_resultados), "date", run_date=now() + timedelta(seconds=80), id="resultados_once")
+        s.add_job(_once_key("regras:2026-11-06", job_diag_regras), "date", run_date=now() + timedelta(seconds=85), id="regras_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
