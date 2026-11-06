@@ -659,6 +659,51 @@ def job_explicar(ticker="USIM5", direction="short"):
         L.append(f"{hk.strftime('%H:%M')} · {fmt_(c['close'])} · {analyzer.explain(direction, daily, m15[:k + 1], hk)}")
     messenger.send("\n".join(L))
 
+def job_diag_resultados():
+    """Comando 'resultados' (so leitura): alertas enviados ja resolvidos, por IV e por veredito, e o mesmo teste com stop na distancia inteira do sinal (em vez de metade)."""
+    from types import SimpleNamespace
+    with database.conn() as c_:
+        rows = c_.execute("SELECT date, ticker, direction, payload FROM alerts ORDER BY date").fetchall()
+    api, cache, itens = Brapi(), {}, []
+    for r in rows:
+        p = json.loads(r["payload"])
+        sg = p.get("signal")
+        if not p.get("option") or p.get("ruim") or not sg:
+            continue
+        try:
+            if r["ticker"] not in cache:
+                cache[r["ticker"]] = api.history(r["ticker"], "3mo", "1d")
+            bars = [b for b in cache[r["ticker"]] if datetime.fromtimestamp(b["date"], TZ).date().isoformat() > r["date"]]
+            atual = outcomes.avaliar(sg, bars)
+            largo = outcomes.avaliar(dict(sg, stop=sg["price"] + 2 * (sg["stop"] - sg["price"])), bars)
+            ivd = p.get("iv") or {}
+            ivw = messenger._iv_word(ivd["iv_rank"], ivd["iv_pct"]) if ivd.get("iv_rank") is not None else "?"
+            try:
+                cobre = messenger._empate(SimpleNamespace(**sg), p["option"])[2]
+            except Exception:
+                cobre = None
+            itens.append(dict(k=f"{r['date'][8:]}/{r['date'][5:7]} {r['ticker']}", iv=ivw, cobre=cobre, atual=atual, largo=largo))
+        except Exception as e:
+            log.warning("diag_resultados %s: %s", r["ticker"], e)
+    def linha(nome, grupo, chave):
+        fech = [i[chave] for i in grupo if i[chave]]
+        if not fech:
+            return f"{nome}: sem resolvidos"
+        a = sum(1 for x in fech if x[0] == "alvo"); sd = sum(1 for x in fech if x[0] == "saida"); pz = sum(1 for x in fech if x[0] == "prazo")
+        m = sum(x[2] for x in fech) / len(fech)
+        d1 = sum(1 for x in fech if x[0] == "saida" and x[1] <= 2)
+        return f"{nome}: {len(fech)} resolvidos · alvo {a} · saída {sd} (em até 2 dias: {d1}) · prazo {pz} · ação média {sgn_(m)}"
+    L = [f"Resultados dos alertas enviados ({len(itens)} no total)", "", "Stop de hoje (metade do caminho):"]
+    L.append(linha("Todos", itens, "atual"))
+    for w in ("barata", "média", "cara"):
+        L.append(linha(f"IV {w}", [i for i in itens if i["iv"] == w], "atual"))
+    L.append(linha("Alvo cobre o empate", [i for i in itens if i["cobre"] is True], "atual"))
+    L.append(linha("Alvo não cobre o empate", [i for i in itens if i["cobre"] is False], "atual"))
+    L += ["", "Mesmos alertas com stop na distância inteira do sinal (o dobro de hoje):", linha("Todos", itens, "largo")]
+    for w in ("barata", "média", "cara"):
+        L.append(linha(f"IV {w}", [i for i in itens if i["iv"] == w], "largo"))
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -684,7 +729,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -897,6 +942,8 @@ def serve():
     if now().date() == date(2026, 11, 5):   # envio unico: distancia ate o nivel (AXIA3 e vizinhos)
         s.add_job(_once_key("niveis:2026-11-05", job_niveis), "date", run_date=now() + timedelta(seconds=75), id="niveis_once")
         s.add_job(_once_key("explicar:USIM5:2026-11-05", job_explicar), "date", run_date=now() + timedelta(seconds=85), id="explicar_once")
+    if now().date() == date(2026, 11, 6):   # envio unico: resultados dos alertas por IV/veredito e teste de stop mais largo
+        s.add_job(_once_key("resultados:2026-11-06", job_diag_resultados), "date", run_date=now() + timedelta(seconds=80), id="resultados_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
