@@ -1123,6 +1123,62 @@ def job_diag_repique():
     L += ["", "Sinais de 05/11 a 09/11 (regra de 2%):"] + [x for _, x in sorted(recentes)[:25]] + ["", "Para empatar, o alvo precisa sair em ~20% dos fechados. O mês teve queda forte seguida de repique, então o resultado pode ser bom demais para repetir."]
     messenger.send("\n".join(L))
 
+def job_diag_forte():
+    """Comando 'forte' (so leitura): cruza mercado contra/a favor com o quanto a acao ja andou alem do nivel, para ver se existe um grupo de sinais fortes."""
+    api, hoje = Brapi(), now().date()
+    bd = api.history("BOVA11", "3mo", "1d"); bm = api.history("BOVA11", "1mo", "15m")
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    def mercado(dia, hk, dr):
+        ant = [d for d in bd if dia_de(d) < dia]
+        ate = [c for c in bm if dia_de(c) == dia and datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15) <= hk + timedelta(minutes=1)]
+        if not ant or not ate:
+            return None
+        v = (ate[-1]["close"] / ant[-1]["close"] - 1) * 100
+        return -v if dr == "short" else v
+    linhas, erros = [], 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15 = api.history(t, "1mo", "15m")
+            for (dia, dr), sg in _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje).items():
+                if dia == date(2026, 10, 26):
+                    continue   # dia com dado do BOVA11 suspeito
+                bars = [b for b in daily if dia_de(b) > dia]
+                res = outcomes.avaliar(sg, bars)
+                hk = datetime.strptime(f"{dia} {sg['hora']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                mv = mercado(dia, hk, dr)
+                if mv is None:
+                    continue
+                linhas.append(dict(dia=dia, t=t, dr=dr, mv=mv, atraso=abs(sg["price"] / sg["level"] - 1) * 100, res=res, hora=sg["hora"], price=sg["price"]))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_forte %s: %s", t, e)
+    def linha(nome, itens):
+        fech = [x["res"] for x in itens if x["res"]]
+        if not itens:
+            return f"  {nome}: sem sinais"
+        a = sum(1 for r in fech if r[0] == "alvo")
+        m = sum(r[2] for r in fech) / len(fech) if fech else 0
+        tx = f"{a / len(fech) * 100:.0f}%" if fech else "-"
+        return f"  {nome}: {len(itens)} sinais em {len({x['dia'] for x in itens})} dias · alvo {a} de {len(fech)} ({tx}) · ação média {sgn_(m)}"
+    L = [f"Sinais fortes? (último mês, {len(linhas)} sinais com dado de mercado; sem 26/10)", ""]
+    for nome, f in (("Mercado contra e até 0,5% além do nível", lambda x: x["mv"] <= 0 and x["atraso"] < 0.5),
+                    ("Mercado contra e mais de 0,5% além do nível", lambda x: x["mv"] <= 0 and x["atraso"] >= 0.5),
+                    ("Mercado a favor e até 0,5% além do nível", lambda x: x["mv"] > 0 and x["atraso"] < 0.5),
+                    ("Mercado a favor e mais de 0,5% além do nível", lambda x: x["mv"] > 0 and x["atraso"] >= 0.5)):
+        L.append(linha(nome, [x for x in linhas if f(x)]))
+    forte = sorted([x for x in linhas if x["mv"] <= 0 and x["atraso"] < 0.5], key=lambda x: x["dia"])
+    L += ["", "Sinais do grupo forte (mercado contra e até 0,5% além do nível):"]
+    for x in forte[:20]:
+        r = x["res"]
+        L.append(f"  {x['dia'].strftime('%d/%m')} {x['t']} {'▲' if x['dr'] == 'long' else '▼'} {x['hora']} · " + (("🎯 alvo" if r[0] == "alvo" else "🛑 saída" if r[0] == "saida" else "⏰ prazo") + f" em {r[1]}d" if r else "aberto"))
+    meio = sorted({x["dia"] for x in linhas})
+    meio = meio[len(meio) // 2] if meio else None
+    if meio:
+        L += ["", f"Duas metades (corte em {meio.strftime('%d/%m')}), grupo forte:"]
+        L.append(linha("1ª metade", [x for x in forte if x["dia"] < meio]))
+        L.append(linha("2ª metade", [x for x in forte if x["dia"] >= meio]))
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1148,7 +1204,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1373,6 +1429,7 @@ def serve():
         s.add_job(_once_key("comparar:2026-11-09", job_comparar), "date", run_date=now() + timedelta(seconds=90), id="comparar_once")
         s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
         s.add_job(_once_key("repique:2026-11-09", job_diag_repique), "date", run_date=now() + timedelta(seconds=110), id="repique_once")
+        s.add_job(_once_key("forte:2026-11-09", job_diag_forte), "date", run_date=now() + timedelta(seconds=115), id="forte_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
