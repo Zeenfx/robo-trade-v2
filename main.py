@@ -912,10 +912,10 @@ def job_diag_bova():
     L += ["", f"Metades do mês (dias sem suspeita; corte em {meio.strftime('%d/%m') if meio else '-'}):"]
     for nome, sel in (("1ª metade", lambda d: d < meio), ("2ª metade", lambda d: d >= meio)):
         L.append(nome + ":")
-        L.append(linha("  a favor", [x for x in ok if sel(x[0]) and x[1] > 0]))
-        L.append(linha("  contra", [x for x in ok if sel(x[0]) and x[1] <= 0]))
+        L.append(linha("a favor", [x for x in ok if sel(x[0]) and x[1] > 0]))
+        L.append(linha("contra", [x for x in ok if sel(x[0]) and x[1] <= 0]))
     L += ["", "Por tamanho do movimento do mercado (a favor da direção, em %):"]
-    for nome, lo, hi in (("contra forte (< −0,5)", -99, -0.5), ("contra leve (−0,5 a 0)", -0.5, 0.0000001), ("a favor leve (0 a 0,5)", 0.0000001, 0.5), ("a favor forte (> 0,5)", 0.5, 99)):
+    for nome, lo, hi in (("contra forte (abaixo de −0,5)", -99, -0.5), ("contra leve (−0,5 a 0)", -0.5, 0.0000001), ("a favor leve (0 a 0,5)", 0.0000001, 0.5), ("a favor forte (acima de 0,5)", 0.5, 99)):
         L.append(linha(nome, [x for x in ok if lo < x[1] <= hi]))
     messenger.send("\n".join(L))
 
@@ -1161,6 +1161,8 @@ def serve():
         s.add_job(_once_key("resultados:2026-11-06", job_diag_resultados), "date", run_date=now() + timedelta(seconds=80), id="resultados_once")
         s.add_job(_once_key("regras:2026-11-06", job_diag_regras), "date", run_date=now() + timedelta(seconds=85), id="regras_once")
         s.add_job(_once_key("filtros:2026-11-06", job_diag_filtros), "date", run_date=now() + timedelta(seconds=90), id="filtros_once")
+    if now().date() == date(2026, 11, 9):   # (reenvio do teste BOVA11 por faixa, ja sem o caractere que o Telegram engolia)
+        s.add_job(_once_key("bova2:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=95), id="bova_once2")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
