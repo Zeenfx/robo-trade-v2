@@ -858,6 +858,67 @@ def job_diag_fatores():
             L.append(f"  {k}: {len(rs)} · alvo {a / len(rs) * 100:.0f}% · ação média {sgn_(m)}")
     messenger.send("\n".join(L))
 
+def job_diag_bova():
+    """Comando 'bova' (so leitura): robustez do fator BOVA11 -- qualidade do dado, duas metades do mes, faixas de variacao do mercado e dias distintos."""
+    api, hoje = Brapi(), now().date()
+    bd = api.history("BOVA11", "3mo", "1d"); bm = api.history("BOVA11", "1mo", "15m")
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    suspeitos = set()
+    for i in range(1, len(bm)):
+        if dia_de(bm[i]) == dia_de(bm[i - 1]) and abs(bm[i]["close"] / bm[i - 1]["close"] - 1) > 0.02:
+            suspeitos.add(dia_de(bm[i]))
+    for d in bd:
+        ult = [c for c in bm if dia_de(c) == dia_de(d)]
+        if ult and abs(ult[-1]["close"] / d["close"] - 1) > 0.02:
+            suspeitos.add(dia_de(d))
+    def mercado(dia, hk, dr):
+        ant = [d for d in bd if dia_de(d) < dia]
+        ate = [c for c in bm if dia_de(c) == dia and datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15) <= hk + timedelta(minutes=1)]
+        if not ant or not ate:
+            return None
+        v = (ate[-1]["close"] / ant[-1]["close"] - 1) * 100
+        return -v if dr == "short" else v      # positivo = mercado a favor da direcao do sinal
+    linhas, erros = [], 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15 = api.history(t, "1mo", "15m")
+            for (dia, dr), sg in _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje).items():
+                bars = [b for b in daily if dia_de(b) > dia]
+                res = outcomes.avaliar(sg, bars)
+                if not res:
+                    continue
+                hk = datetime.strptime(f"{dia} {sg['hora']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                mv = mercado(dia, hk, dr)
+                if mv is not None:
+                    linhas.append((dia, mv, res))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_bova %s: %s", t, e)
+    def linha(nome, itens):
+        if not itens:
+            return f"  {nome}: sem sinais"
+        a = sum(1 for _, _, r in itens if r[0] == "alvo")
+        m = sum(r[2] for _, _, r in itens) / len(itens)
+        return f"  {nome}: {len(itens)} sinais em {len({d for d, _, _ in itens})} dias · alvo {a / len(itens) * 100:.0f}% · ação média {sgn_(m)}"
+    L = [f"Robustez do fator BOVA11 ({len(linhas)} sinais)", "",
+         "Dados do BOVA11 suspeitos (salto >2% num candle ou fecho do M15 diferente do diário): " + (", ".join(sorted(d.strftime('%d/%m') for d in suspeitos)) or "nenhum"), ""]
+    ok = [x for x in linhas if x[0] not in suspeitos]
+    for titulo, base in (("Todos os dias", linhas), ("Sem os dias suspeitos", ok)):
+        L.append(titulo + ":")
+        L.append(linha("Mercado a favor (>0)", [x for x in base if x[1] > 0]))
+        L.append(linha("Mercado contra (≤0)", [x for x in base if x[1] <= 0]))
+    dias = sorted({d for d, _, _ in ok})
+    meio = dias[len(dias) // 2] if dias else None
+    L += ["", f"Metades do mês (dias sem suspeita; corte em {meio.strftime('%d/%m') if meio else '-'}):"]
+    for nome, sel in (("1ª metade", lambda d: d < meio), ("2ª metade", lambda d: d >= meio)):
+        L.append(nome + ":")
+        L.append(linha("  a favor", [x for x in ok if sel(x[0]) and x[1] > 0]))
+        L.append(linha("  contra", [x for x in ok if sel(x[0]) and x[1] <= 0]))
+    L += ["", "Por tamanho do movimento do mercado (a favor da direção, em %):"]
+    for nome, lo, hi in (("contra forte (< −0,5)", -99, -0.5), ("contra leve (−0,5 a 0)", -0.5, 0.0000001), ("a favor leve (0 a 0,5)", 0.0000001, 0.5), ("a favor forte (> 0,5)", 0.5, 99)):
+        L.append(linha(nome, [x for x in ok if lo < x[1] <= hi]))
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -883,7 +944,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1102,6 +1163,7 @@ def serve():
         s.add_job(_once_key("filtros:2026-11-06", job_diag_filtros), "date", run_date=now() + timedelta(seconds=90), id="filtros_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
+        s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
