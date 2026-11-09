@@ -1044,6 +1044,85 @@ def job_comparar_dias(dias=None):
     L.append("Dados de 20 dias suspeitos (nível a mais de 15% do preço): " + ("; ".join(suspeitos) if suspeitos else "nenhum"))
     messenger.send("\n".join(L))
 
+def _sinais_repique(t, daily, m15, ate_dia, mov_min):
+    """Regra de repique/recuo (teste): ativo que tocou o extremo de 20 dias nos ultimos 5 pregoes e, hoje, dois fechamentos M15 seguidos a mov_min% ou mais do fechamento de ontem no sentido oposto, com volume >= VR_MIN.
+    Alta (call) vindo da minima; queda (put) vindo da maxima. Stop na minima/maxima do dia (+ buffer ATR), alvo RR_TARGET. Retorna {(dia, direcao): sinal dict}."""
+    out = {}
+    for dia in sorted({datetime.fromtimestamp(c["date"], TZ).date() for c in m15}):
+        if dia >= ate_dia:
+            continue
+        hist = [d for d in daily if datetime.fromtimestamp(d["date"], TZ).date() < dia]
+        if len(hist) < config.BREAKOUT_LOOKBACK + 1:
+            continue
+        jan = hist[-config.BREAKOUT_LOOKBACK:]
+        hi, lo = max(d["high"] for d in jan), min(d["low"] for d in jan)
+        rec = hist[-5:]
+        a = analyzer.atr(hist)
+        if not a:
+            continue
+        perto_lo = min(d["low"] for d in rec) <= lo * 1.02
+        perto_hi = max(d["high"] for d in rec) >= hi * 0.98
+        prev = hist[-1]["close"]
+        avg = sum(d["volume"] for d in jan if d.get("volume")) / max(1, sum(1 for d in jan if d.get("volume")))
+        mt = [c for c in m15 if datetime.fromtimestamp(c["date"], TZ).date() == dia]
+        for k in range(1, len(mt)):
+            hk = datetime.fromtimestamp(mt[k]["date"], TZ) + timedelta(minutes=15)
+            vr = sum(c.get("volume") or 0 for c in mt[:k + 1]) / (avg * analyzer.session_fraction(hk)) if avg else 0
+            if vr < config.VR_MIN:
+                continue
+            c1, c2 = mt[k - 1]["close"], mt[k]["close"]
+            for dr in ("long", "short"):
+                if (dia, dr) in out:
+                    continue
+                if dr == "long" and perto_lo and min(c1, c2) >= prev * (1 + mov_min / 100):
+                    stop = min(c["low"] for c in mt[:k + 1]) - config.STOP_ATR_BUFFER * a
+                elif dr == "short" and perto_hi and max(c1, c2) <= prev * (1 - mov_min / 100):
+                    stop = max(c["high"] for c in mt[:k + 1]) + config.STOP_ATR_BUFFER * a
+                else:
+                    continue
+                risco = abs(c2 - stop)
+                if risco <= 0 or risco > config.MAX_STOP_ATR * a:
+                    continue
+                sg = 1 if dr == "long" else -1
+                out[(dia, dr)] = dict(ticker=t, direction=dr, price=c2, level=lo if dr == "long" else hi, stop=stop, target=c2 + sg * config.RR_TARGET * risco, atr=a, vr=vr, hora=hk.strftime("%H:%M"))
+    return out
+
+def job_diag_repique():
+    """Comando 'repique' (so leitura): ultimo mes nos ativos do universo, regra de repique/recuo com 2% e 3% de movimento; resultado e quais movimentos de 05/11 a 09/11 ela teria pegado."""
+    api, hoje = Brapi(), now().date()
+    res = {2.0: [], 3.0: []}
+    recentes = []
+    erros = 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15 = api.history(t, "1mo", "15m")
+            for mov in (2.0, 3.0):
+                for (dia, dr), sg in _sinais_repique(t, daily, m15, hoje + timedelta(days=1), mov).items():
+                    bars = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() > dia]
+                    r = outcomes.avaliar(sg, bars)
+                    res[mov].append((dia, dr, r))
+                    if mov == 2.0 and dia >= date(2026, 11, 5):
+                        ult = [d for d in daily if datetime.fromtimestamp(d["date"], TZ).date() == dia]
+                        fav = ((ult[0]["close"] / sg["price"] - 1) * 100 * (1 if dr == "long" else -1)) if ult else 0
+                        recentes.append((dia, f"{dia.strftime('%d/%m')} {t} {'▲' if dr == 'long' else '▼'} sinal {sg['hora']} a {fmt_(sg['price'])} · até o fechamento {sgn_(fav)}"))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_repique %s: %s", t, e)
+    def linha(nome, itens):
+        fech = [r for _, _, r in itens if r]
+        a = sum(1 for r in fech if r[0] == "alvo"); sd = sum(1 for r in fech if r[0] == "saida")
+        m = sum(r[2] for r in fech) / len(fech) if fech else 0
+        tx = f"{a / len(fech) * 100:.0f}%" if fech else "-"
+        return f"{nome}: {len(itens)} sinais em {len({d for d, _, _ in itens})} dias · alvo {a} ({tx}) · saída {sd} · abertos {len(itens) - len(fech)} · ação média {sgn_(m)}"
+    L = [f"Teste de repique/recuo (último mês, {len(config.UNIVERSE) - erros} ativos; volume {config.VR_MIN}x; sem filtro de IV/opção)", ""]
+    for mov in (2.0, 3.0):
+        L.append(f"Movimento mínimo de {messenger.fmt(mov, 0)}% sobre o fechamento de ontem:")
+        L.append(linha("  Todos", res[mov]))
+        L.append(linha("  Calls (repique)", [x for x in res[mov] if x[1] == "long"]))
+        L.append(linha("  Puts (recuo)", [x for x in res[mov] if x[1] == "short"]))
+    L += ["", "Sinais de 05/11 a 09/11 (regra de 2%):"] + [x for _, x in sorted(recentes)[:25]] + ["", "Para empatar, o alvo precisa sair em ~20% dos fechados. O mês teve queda forte seguida de repique, então o resultado pode ser bom demais para repetir."]
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1069,7 +1148,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1293,6 +1372,7 @@ def serve():
         s.add_job(_once_key("bova2:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=95), id="bova_once2")
         s.add_job(_once_key("comparar:2026-11-09", job_comparar), "date", run_date=now() + timedelta(seconds=90), id="comparar_once")
         s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
+        s.add_job(_once_key("repique:2026-11-09", job_diag_repique), "date", run_date=now() + timedelta(seconds=110), id="repique_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
