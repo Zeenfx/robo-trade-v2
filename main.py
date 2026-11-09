@@ -1179,6 +1179,65 @@ def job_diag_forte():
         L.append(linha("2ª metade", [x for x in forte if x["dia"] >= meio]))
     messenger.send("\n".join(L))
 
+def job_diag_opcao():
+    """Comando 'opcao' (so leitura): nos sinais do ultimo mes, retorno estimado da opcao por vencimento mensal (proximo x seguinte) e delta (0,3/0,5/0,7), saindo em 10 pregoes ou ate 1 dia antes do vencimento (com parcial de metade)."""
+    import opcao_teste as ot
+    from statistics import median
+    api, hoje = Brapi(), now().date()
+    bd = api.history("BOVA11", "3mo", "1d"); bm = api.history("BOVA11", "1mo", "15m")
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    def mercado(dia, hk, dr):
+        ant = [d for d in bd if dia_de(d) < dia]
+        ate = [c for c in bm if dia_de(c) == dia and datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15) <= hk + timedelta(minutes=1)]
+        if not ant or not ate:
+            return None
+        v = (ate[-1]["close"] / ant[-1]["close"] - 1) * 100
+        return -v if dr == "short" else v
+    DELTAS = (0.3, 0.5, 0.7)
+    acc = {}    # (grupo, venc_idx, delta, politica) -> [retornos]
+    nsin = {"todos": 0, "mercado contra": 0}
+    erros = 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15 = api.history("%s" % t, "1mo", "15m")
+            for (dia, dr), sg in _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje).items():
+                if dia == date(2026, 10, 26):
+                    continue
+                bars = [b for b in daily if dia_de(b) > dia]
+                hk = datetime.strptime(f"{dia} {sg['hora']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                mv = mercado(dia, hk, dr)
+                grupos = ["todos"] + (["mercado contra"] if mv is not None and mv <= 0 else [])
+                for g in grupos:
+                    nsin[g] += 1
+                sigma = ot.sigma_hist(daily, dia)
+                for vi, venc in enumerate(ot.vencimentos(dia, 2)):
+                    ate_venc = len([b for b in bars if dia_de(b) < venc])
+                    for dl in DELTAS:
+                        for pol, prazo in (("10 pregões", config.TIME_EXIT_DAYS), ("até 1 dia antes do vencimento", min(ate_venc, 40))):
+                            if prazo <= 0:
+                                continue
+                            r = ot.retorno(sg, dia, bars, venc, dl, prazo, sigma)
+                            if r is not None:
+                                for g in grupos:
+                                    acc.setdefault((g, vi, dl, pol), []).append(r)
+        except Exception as e:
+            erros += 1
+            log.warning("diag_opcao %s: %s", t, e)
+    L = [f"Qual opção teria rendido mais (último mês, {len(config.UNIVERSE) - erros} ativos; estimativa Black-Scholes, custo de 3% por lado, metade vendida no parcial)", ""]
+    for g in ("todos", "mercado contra"):
+        L.append(f"Sinais: {g} ({nsin[g]})")
+        for vi, nome in ((0, "Vencimento mensal próximo"), (1, "Vencimento mensal seguinte")):
+            L.append(f"  {nome}:")
+            for dl in DELTAS:
+                partes = []
+                for pol in ("10 pregões", "até 1 dia antes do vencimento"):
+                    x = acc.get((g, vi, dl, pol), [])
+                    partes.append(f"{'10 pregões' if pol == '10 pregões' else 'até o vencimento'}: " + (f"{len(x)} · média {sgn_(sum(x) / len(x) * 100)} · mediana {sgn_(median(x) * 100)} · positivos {sum(1 for v in x if v > 0) / len(x) * 100:.0f}%" if x else "sem resolvidos"))
+                L.append(f"    delta {messenger.fmt(dl, 1)}: " + " | ".join(partes))
+        L.append("")
+    L.append("Só ordena escolhas; não é preço real. Retorno sobre o prêmio, antes de corretagem.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1204,7 +1263,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1430,6 +1489,7 @@ def serve():
         s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
         s.add_job(_once_key("repique:2026-11-09", job_diag_repique), "date", run_date=now() + timedelta(seconds=110), id="repique_once")
         s.add_job(_once_key("forte:2026-11-09", job_diag_forte), "date", run_date=now() + timedelta(seconds=115), id="forte_once")
+        s.add_job(_once_key("opcao:2026-11-09", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
