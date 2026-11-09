@@ -983,6 +983,67 @@ def job_comparar():
             L.append(f"{t}: erro {type(e).__name__} {str(e)[:50]}")
     messenger.send("\n".join(L))
 
+def job_comparar_dias(dias=None):
+    """Comando 'dias' (so leitura): em cada dia (padrao: 05/11 e 06/11), nos ativos do robo, o que a regra viu, quanto a acao andou depois do sinal e o que o robo fez; e ativos com dado de 20 dias suspeito."""
+    dias = dias or [date(2026, 11, 5), date(2026, 11, 6)]
+    api, hoje = Brapi(), now().date()
+    tick = list(dict.fromkeys(list(config.UNIVERSE) + ["SMAL11"]))
+    por_dia = {d: [] for d in dias}
+    suspeitos = []
+    try:
+        bd = api.history("BOVA11", "3mo", "1d"); bm = api.history("BOVA11", "1mo", "15m")
+    except Exception:
+        bd, bm = [], []
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    def mercado(dia, hk, dr):
+        ant = [d for d in bd if dia_de(d) < dia]
+        ate = [c for c in bm if dia_de(c) == dia and datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15) <= hk + timedelta(minutes=1)]
+        if not ant or not ate:
+            return None
+        v = (ate[-1]["close"] / ant[-1]["close"] - 1) * 100
+        return -v if dr == "short" else v
+    with database.conn() as c_:
+        al = {(r["date"], r["ticker"], r["direction"]): json.loads(r["payload"]) for r in c_.execute("SELECT date, ticker, direction, payload FROM alerts").fetchall()}
+    for t in tick:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15all = api.history(t, "1mo", "15m")
+            ult = daily[-1]["close"]
+            jan = daily[-config.BREAKOUT_LOOKBACK - 1:-1]
+            if jan and (max(d["high"] for d in jan) > ult * 1.15 or min(d["low"] for d in jan) < ult * 0.85):
+                suspeitos.append(f"{t} (preço {fmt_(ult)} · máx 20d {fmt_(max(d['high'] for d in jan))} · mín 20d {fmt_(min(d['low'] for d in jan))})")
+            sinais = _replay_conf(daily, m15all, t, config.M15_CONFIRM_CLOSES, hoje)
+            for dia in dias:
+                dd = [d for d in daily if dia_de(d) == dia]; pd_ = [d for d in daily if dia_de(d) < dia]
+                if not dd or not pd_:
+                    continue
+                chg = (dd[0]["close"] / pd_[-1]["close"] - 1) * 100
+                dr = "long" if chg >= 0 else "short"
+                sg = sinais.get((dia, dr))
+                a = al.get((str(dia), t, dr))
+                if not sg and abs(chg) < 2.5 and not a:
+                    continue
+                if sg:
+                    fav = (dd[0]["close"] / sg["price"] - 1) * 100 * (1 if dr == "long" else -1)
+                    mv = mercado(dia, datetime.strptime(f"{dia} {sg['hora']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ), dr)
+                    regra = f"sinal {sg['hora']} a {fmt_(sg['price'])} · depois do sinal a ação fez {sgn_(fav)}" + ("" if mv is None else f" · mercado {'a favor' if mv > 0 else 'contra'}")
+                else:
+                    regra = "sem sinal pela regra"
+                if a:
+                    rob = "sem opção" if not a.get("option") else "RUIM (não enviado)" if a.get("ruim") else "enviado"
+                else:
+                    rob = "sem alerta" + ("" if sg else "")
+                por_dia[dia].append((abs(chg), f"{t} {'▲' if dr == 'long' else '▼'} {sgn_(chg)} · {regra} · robô: {rob}"))
+        except Exception as e:
+            log.warning("comparar_dias %s: %s", t, e)
+    L = []
+    for dia in dias:
+        L.append(f"{dia.strftime('%d/%m')} (regra atual, volume 1,2x, já em vigor nesse dia)")
+        itens = sorted(por_dia[dia], reverse=True)[:14]
+        L += [x for _, x in itens] or ["nada relevante"]
+        L.append("")
+    L.append("Dados de 20 dias suspeitos (nível a mais de 15% do preço): " + ("; ".join(suspeitos) if suspeitos else "nenhum"))
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1008,7 +1069,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1231,6 +1292,7 @@ def serve():
     if now().date() == date(2026, 11, 9):   # (reenvio do teste BOVA11 por faixa, ja sem o caractere que o Telegram engolia)
         s.add_job(_once_key("bova2:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=95), id="bova_once2")
         s.add_job(_once_key("comparar:2026-11-09", job_comparar), "date", run_date=now() + timedelta(seconds=90), id="comparar_once")
+        s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
