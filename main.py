@@ -803,6 +803,61 @@ def job_diag_filtros():
     L += ["", linha("Puts", lados["put"]), linha("Calls", lados["call"]), "", "Para empatar, o alvo precisa sair em ~20% dos fechados na ação."]
     messenger.send("\n".join(L))
 
+def job_diag_fatores():
+    """Comando 'fatores' (so leitura): no ultimo mes, taxa de alvo por faixa de hora, volume, atraso do sinal, direcao do BOVA11, stop em ATR e lado (put/call)."""
+    api, hoje = Brapi(), now().date()
+    try:
+        bd = api.history("BOVA11", "3mo", "1d"); bm = api.history("BOVA11", "1mo", "15m")
+    except Exception:
+        bd, bm = [], []
+    def bova_a_favor(dia, hk, dr):
+        ant = [d for d in bd if datetime.fromtimestamp(d["date"], TZ).date() < dia]
+        ate = [c for c in bm if datetime.fromtimestamp(c["date"], TZ).date() == dia and datetime.fromtimestamp(c["date"], TZ) + timedelta(minutes=15) <= hk + timedelta(minutes=1)]
+        if not ant or not ate:
+            return None
+        v = ate[-1]["close"] / ant[-1]["close"] - 1
+        return (v < 0) if dr == "short" else (v > 0)
+    linhas, erros = [], 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "3mo", "1d"); m15 = api.history(t, "1mo", "15m")
+            for (dia, dr), sg in _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje).items():
+                bars = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() > dia]
+                res = outcomes.avaliar(sg, bars)
+                if not res:
+                    continue
+                hh = int(sg["hora"][:2]) + int(sg["hora"][3:]) / 60
+                atraso = abs(sg["price"] / sg["level"] - 1) * 100
+                f = {}
+                f["Hora do sinal"] = "10:00-11:00" if hh < 11 else "11:00-13:00" if hh < 13 else "13:00-15:00" if hh < 15 else "depois das 15:00"
+                f["Volume (ritmo do dia)"] = "1,2x-1,5x" if sg["vr"] < 1.5 else "1,5x-2,5x" if sg["vr"] < 2.5 else "acima de 2,5x"
+                f["Quanto já andou além do nível"] = "até 0,5%" if atraso < 0.5 else "0,5%-1%" if atraso < 1 else "1%-2%" if atraso < 2 else "acima de 2%"
+                risco = abs(sg["price"] - sg["stop"]) / sg["atr"]
+                f["Distância do stop do sinal"] = "até 0,8 ATR" if risco < 0.8 else "0,8-1,3 ATR" if risco < 1.3 else "acima de 1,3 ATR"
+                f["Lado"] = "put" if dr == "short" else "call"
+                bv = bova_a_favor(dia, datetime.strptime(f"{dia} {sg['hora']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ), dr)
+                f["BOVA11 no dia"] = "sem dado" if bv is None else ("a favor da direção" if bv else "contra a direção")
+                linhas.append((f, res))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_fatores %s: %s", t, e)
+    if not linhas:
+        messenger.send("Fatores: sem sinais resolvidos.")
+        return
+    base = sum(1 for _, r in linhas if r[0] == "alvo") / len(linhas) * 100
+    L = [f"O que separa rompimentos que dão certo (último mês, {len(linhas)} sinais resolvidos, alvo geral {base:.0f}%)", ""]
+    for nome in ["Hora do sinal", "Volume (ritmo do dia)", "Quanto já andou além do nível", "Distância do stop do sinal", "BOVA11 no dia", "Lado"]:
+        L.append(nome + ":")
+        faixas = {}
+        for f, r in linhas:
+            faixas.setdefault(f[nome], []).append(r)
+        for k in sorted(faixas):
+            rs = faixas[k]
+            a = sum(1 for r in rs if r[0] == "alvo")
+            m = sum(r[2] for r in rs) / len(rs)
+            L.append(f"  {k}: {len(rs)} · alvo {a / len(rs) * 100:.0f}% · ação média {sgn_(m)}")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -828,7 +883,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1045,6 +1100,8 @@ def serve():
         s.add_job(_once_key("resultados:2026-11-06", job_diag_resultados), "date", run_date=now() + timedelta(seconds=80), id="resultados_once")
         s.add_job(_once_key("regras:2026-11-06", job_diag_regras), "date", run_date=now() + timedelta(seconds=85), id="regras_once")
         s.add_job(_once_key("filtros:2026-11-06", job_diag_filtros), "date", run_date=now() + timedelta(seconds=90), id="filtros_once")
+    if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
+        s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
