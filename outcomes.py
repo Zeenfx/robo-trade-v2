@@ -96,6 +96,12 @@ def _sim_opcao(p, r):
         return None
 
 
+def _bloqueados():
+    """Chaves (data, ticker, direcao) dos alertas bloqueados pelo filtro de mercado (nao enviados)."""
+    with database.conn() as c:
+        return {(r["date"], r["ticker"], r["direction"]) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts").fetchall() if json.loads(r["payload"]).get("bloq_mercado")}
+
+
 def detalhe():
     """Lista cada alerta resolvido (resultado, quanto a acao andou, opcao estimada) e a soma estimada por 100 opcoes."""
     L, tot, n, favor = [], 0.0, 0, 0
@@ -104,6 +110,8 @@ def detalhe():
         rows = [dict(x) for x in c.execute("SELECT * FROM outcomes ORDER BY date").fetchall()]
         pay = {(r["date"], r["ticker"], r["direction"]): json.loads(r["payload"]) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts").fetchall()}
     nome = {"alvo": "🎯 alvo", "saida": "🛑 saída", "prazo": "⏰ prazo"}
+    bq = _bloqueados()
+    rows = [r for r in rows if (r["date"], r["ticker"], r["direction"]) not in bq]
     for r in rows:
         sim = _sim_opcao(pay.get((r["date"], r["ticker"], r["direction"])) or {}, r)
         favor += 1 if r["move_pct"] > 0 else 0
@@ -123,9 +131,14 @@ def detalhe():
 def relatorio(today=None):
     with database.conn() as c:
         c.execute(SCHEMA.replace("\n", " "))
-        rows = [dict(x) for x in c.execute("SELECT * FROM outcomes ORDER BY date").fetchall()]
+        todos = [dict(x) for x in c.execute("SELECT * FROM outcomes ORDER BY date").fetchall()]
+        bq = _bloqueados()
+        rows = [r for r in todos if (r["date"], r["ticker"], r["direction"]) not in bq]
+        bloq = [r for r in todos if (r["date"], r["ticker"], r["direction"]) in bq]
         abertos = []
         for r in c.execute("SELECT date, ticker, direction, payload FROM alerts ORDER BY date").fetchall():
+            if (r["date"], r["ticker"], r["direction"]) in bq:
+                continue
             if json.loads(r["payload"]).get("option") and not any(o["date"] == r["date"] and o["ticker"] == r["ticker"] and o["direction"] == r["direction"] for o in rows):
                 abertos.append(f"{r['ticker']} {'▲' if r['direction'] == 'long' else '▼'} ({r['date'][8:10]}/{r['date'][5:7]})")
     L = []
@@ -146,6 +159,8 @@ def relatorio(today=None):
     d = detalhe()
     if d:
         L.append(d)
+    if bloq:
+        L += ["", f"Bloqueados pelo mercado (não enviados): {len(bloq)} resolvidos · alvo em {sum(1 for r in bloq if r['result'] == 'alvo')} · saída em {sum(1 for r in bloq if r['result'] == 'saida')}"]
     if abertos:
         L.append("")
         L.append("Em andamento: " + ", ".join(abertos))

@@ -113,7 +113,7 @@ def _quantidade(sig, opt, teto, stop, today):
         return None
 
 
-def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
+def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None, mercado=None):
     """Mensagem enxuta para celular: opcao, compra ate, alvo e stop (nivel da acao), prazo e veredito (BOM / NEUTRO / RUIM)."""
     long_ = sig.direction == "long"
     ivw = _iv_word(iv["iv_rank"], iv["iv_pct"])
@@ -154,6 +154,8 @@ def alert_msg(sig, iv, opt, opt_err, today=None, ibov=None, carteira=None):
         L.append(f"Prazo: {positions.add_pregoes(today, config.TIME_EXIT_DAYS).strftime('%d/%m')}")
         q = _quantidade(sig, opt, teto, stop, today)
         if q: L.append(q)
+    if mercado is not None:   # BOVA11 no sentido do sinal: positivo = mercado a favor
+        L.append(f"Mercado: BOVA11 {'+' if mercado >= 0 else '−'}{fmt(abs(mercado), 1)}% no sentido do sinal ({'a favor' if mercado > 0 else 'contra'})")
     _, _, covers = _empate(sig, opt)
     bom_iv = ivw != "cara"
     tag = "✅ BOM" if covers and bom_iv else ("❌ RUIM" if not covers and not bom_iv else "⚠️ NEUTRO")

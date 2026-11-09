@@ -5,7 +5,7 @@ Apoio à decisão. **Não executa ordens.**
 ## Lógica (IV primeiro, gráfico depois)
 1. **08:30 (dados do pregão anterior, disponíveis na brapi desde ~21h):** `eod` coleta a IV ATM (vencimento ~40 DTE) de cada ativo, salva no SQLite e calcula IV Rank / IV Percentile (252 pregões). Aprovados (Rank ≤ 25 e Percentile ≤ 30) entram na **watchlist** do dia seguinte.
 2. **09:30 (opcional, desligado):** `WATCHLIST_MSG=true` envia a lista de ativos em observação.
-3. **09:45–17:45:** `intraday` (5 min até 10:10, depois 15 min) analisa **só a watchlist**: rompimento da máxima/mínima de 20 pregões, 2 fechamentos M15 confirmando, ritmo de volume ≥ 1,2x, stop = nível ∓ 0,5 ATR, alvo 1:2.
+3. **09:45–17:45:** `intraday` (5 min até 10:10, depois 15 min) analisa **só a watchlist**: rompimento da máxima/mínima de 20 pregões, 2 fechamentos M15 confirmando, ritmo de volume ≥ 1,2x, BOVA11 não andando no mesmo sentido do sinal (filtro de 09/11; `FILTRO_MERCADO=0` desliga; sinais bloqueados ficam no resumo e no placar em separado), stop = nível ∓ 0,5 ATR, alvo 1:2.
 4. Com sinal, escolhe a opção (call p/ alta, put p/ baixa): delta 0,40–0,60, 30–60 DTE, OI ≥ 500, volume ≥ 50, spread ≤ 8%. Envia mensagem curta + completa (com risco e manejo). Um alerta por ativo/direção/dia.
 
 Todos os limiares estão em `config.py`.

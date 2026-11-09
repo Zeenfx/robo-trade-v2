@@ -831,3 +831,26 @@ def test_explain_mostra_o_que_bloqueia():
     assert "1 fecho" in analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 50.0, 1), m(3, 49.0, 1)], agora)
     assert "volume" in analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 49.0, 1), m(3, 49.0, 1)], agora)
     assert analyzer.explain("short", daily, [m(0, 50.0, 1), m(1, 50.0, 1), m(2, 49.0, 500_000), m(3, 49.0, 500_000)], agora).startswith("SINAL")
+
+
+def test_filtro_mercado(monkeypatch, tmp_path):
+    import main, outcomes
+    from types import SimpleNamespace as NS
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "m.db"))
+    # BOVA11 -0,8%: a favor de um put, contra uma call
+    assert _approx(main._mercado_no_sentido(-0.8, "short"), 0.8) and _approx(main._mercado_no_sentido(-0.8, "long"), -0.8)
+    assert main._mercado_no_sentido(None, "short") is None
+    # a mensagem mostra o mercado
+    sig = NS(ticker="RAIL3", direction="short", price=13.30, level=13.5, stop=14.4, target=12.54, atr=.3, vr=1, trend_d1="", h1_note="", trigger_m15="", space="medio")
+    opt = dict(symbol="RAILX140", strike=14.08, expiration="2026-12-18", ask=0.92, bid=0.9, iv=0.45, dte=45, lot=100, last_only=False, spot_ref=13.4)
+    assert "BOVA11 −0,4% no sentido do sinal (contra)" in messenger.alert_msg(sig, dict(iv_rank=40, iv_pct=50), opt, "", date(2026, 11, 3), None, None, -0.4)
+    # bloqueados ficam registrados e saem da contagem de enviados e do placar principal
+    database.save_alert("2026-11-09", "PRIO3", "short", "2026-11-09T10:45:00", {"signal": {}, "option": dict(symbol="X"), "ruim": False, "bloq_mercado": True, "mercado": 0.6})
+    database.save_alert("2026-11-09", "SUZB3", "long", "2026-11-09T11:00:00", {"signal": {}, "option": dict(symbol="Y"), "ruim": False, "bloq_mercado": False, "mercado": -0.2})
+    assert database.mercado_bloq_signals("2026-11-09") == [("PRIO3", "short")]
+    assert database.count_alerts("2026-11-09", True) == 1
+    assert ("2026-11-09", "PRIO3", "short") in outcomes._bloqueados()
+
+
+def _approx(a, b):
+    return abs(a - b) < 1e-9

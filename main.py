@@ -70,6 +70,25 @@ def _ibov_change(api, t0):
         log.warning("Variacao do Ibovespa indisponivel: %s", e)
         return None
 
+def _bova_pct(api, t0):
+    """Variacao do BOVA11 hoje (ultimo candle de 15 min vs fechamento anterior, em %). None se faltar dado ou se o numero parecer erro (|v| > 8%)."""
+    try:
+        ant = [d for d in api.history("BOVA11", "5d", "1d") if datetime.fromtimestamp(d["date"], TZ).date() < t0.date()]
+        hoje = [c for c in api.history("BOVA11", "5d", "15m") if datetime.fromtimestamp(c["date"], TZ).date() == t0.date()]
+        if not ant or not hoje:
+            return None
+        v = (hoje[-1]["close"] / ant[-1]["close"] - 1) * 100
+        return v if abs(v) <= 8 else None
+    except Exception as e:
+        log.warning("BOVA11 indisponivel: %s", e)
+        return None
+
+def _mercado_no_sentido(bov, direction):
+    """Variacao do BOVA11 no sentido do sinal (positivo = mercado a favor). None se nao houver dado."""
+    if bov is None:
+        return None
+    return -bov if direction == "short" else bov
+
 def job_intraday():
     d, wl = screener.watchlist()
     if not wl: return
@@ -96,6 +115,7 @@ def job_intraday():
             erros += 1
             log.error("%s: %s", t, e)
     ibov = _ibov_change(api, t0) if sigs else None
+    bov = _bova_pct(api, t0) if sigs else None
     for s in screener.rank_signals(sigs):
         iv = wl[s.ticker]
         database.log_signal(t0.isoformat(), s.ticker, s.direction, s.dict())
@@ -103,17 +123,21 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        ruim = False
-        if opt:   # sem opcao liquida ou com veredito RUIM nao vira alerta: fica registrado e aparece no resumo das 18:30
-            msg = messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas())
+        ruim, bloq = False, False
+        mv = _mercado_no_sentido(bov, s.direction)
+        if opt:   # sem opcao liquida, com veredito RUIM ou com o mercado no mesmo sentido nao vira alerta: fica registrado e aparece no resumo das 18:30
+            msg = messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas(), mv)
             ruim = "❌ RUIM" in msg
             if ruim:
                 log.info("%s %s: veredito RUIM; fica para o resumo", s.ticker, s.direction)
+            elif config.FILTRO_MERCADO and mv is not None and mv > 0:
+                bloq = True
+                log.info("%s %s: BOVA11 %.1f%% no mesmo sentido; fica para o resumo", s.ticker, s.direction, mv)
             else:
                 messenger.send(msg)
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
-        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "ruim": ruim, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "ruim": ruim, "bloq_mercado": bloq, "mercado": mv, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
@@ -1016,6 +1040,9 @@ def job_summary():
     ruim = database.ruim_signals(hoje)
     if ruim:
         L.append("Alertas ❌ RUIM (não enviados): " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in ruim))
+    bq = database.mercado_bloq_signals(hoje)
+    if bq:
+        L.append("Bloqueados (BOVA11 no mesmo sentido, não enviados): " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in bq))
     try:
         near = _near_list(Brapi())
         if near:
