@@ -1730,8 +1730,8 @@ def _once_key(key, fn):
     def run():
         if database.get_meta(key):
             return
+        fn()                       # a chave so e gravada depois: se o deploy derrubar o robo no meio, o envio roda de novo na subida
         database.set_meta(key, "1")
-        fn()
     return run
 
 def _once(name, fn):
@@ -1946,11 +1946,11 @@ def serve():
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de exemplos
         s.add_job(_once_key("exemplos:2026-11-10", job_diag_exemplos), "date", run_date=now() + timedelta(seconds=150), id="exemplos_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de saidas
-        s.add_job(_once_key("saidas:2026-11-10", job_diag_saidas), "date", run_date=now() + timedelta(seconds=160), id="saidas_once")
+        s.add_job(_once_key("saidas2:2026-11-10", job_diag_saidas), "date", run_date=now() + timedelta(seconds=120), id="saidas_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de continuacao
-        s.add_job(_once_key("continuacao:2026-11-10", job_diag_continuacao), "date", run_date=now() + timedelta(seconds=170), id="continuacao_once")
+        s.add_job(_once_key("continuacao2:2026-11-10", job_diag_continuacao), "date", run_date=now() + timedelta(seconds=300), id="continuacao_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico dos exemplos de outubro
-        s.add_job(_once_key("exemplos2b:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=180), id="exemplos2_once")
+        s.add_job(_once_key("exemplos2c:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=480), id="exemplos2_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
