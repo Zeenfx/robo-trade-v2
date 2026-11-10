@@ -1496,10 +1496,11 @@ def serve():
         s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
         s.add_job(_once_key("repique:2026-11-09", job_diag_repique), "date", run_date=now() + timedelta(seconds=110), id="repique_once")
         s.add_job(_once_key("forte:2026-11-09", job_diag_forte), "date", run_date=now() + timedelta(seconds=115), id="forte_once")
-        s.add_job(_once_key("opcao2:2026-11-10", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
+    if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de opcao (a chave impede repetir)
+        s.add_job(_once_key("opcao2:2026-11-10", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
