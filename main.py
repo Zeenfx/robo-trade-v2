@@ -1461,6 +1461,118 @@ def _diag_exemplos():
     L.append("Pico e fundo escolhidos olhando para trás: é o melhor caso possível, não o que dava para saber na hora.")
     messenger.send("\n".join(L))
 
+def job_diag_saidas():
+    try:
+        _diag_saidas()
+    except Exception as e:
+        log.exception("diag_saidas falhou")
+        messenger.send(f"Teste de saídas falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _ret_saida(sg, bars, venc, call, K, vol, tp1, tp2):
+    """Retorno estimado da opcao com saida por lucro: vende metade quando a opcao chega a +tp1 (gatilho no extremo favoravel do dia, otimista),
+    o resto em +tp2 (ou deixa correr ate 1 dia antes do vencimento, com saida no empate depois do 1o gatilho). Stop da acao = 'Sair se' do robo. Custo 3% por lado."""
+    import opcao_teste as ot
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    call_ = call
+    stop, _, _alvo = outcomes.niveis(sg)
+    p = sg["price"]
+    prazo_b = [b for b in bars if dia_de(b) < venc][:40]
+    if not prazo_b:
+        return None
+    ent_dia = sg["_dia"]
+    v0 = ot.valor(call_, p, K, (venc - ent_dia).days, vol)
+    if v0 <= 0:
+        return None
+    entry = v0 * 1.03
+    resto, caixa, vendeu1 = 1.0, 0.0, False
+    for b in prazo_b:
+        dl = (venc - dia_de(b)).days
+        adv, fav = (b["low"], b["high"]) if call_ else (b["high"], b["low"])
+        if (call_ and adv <= stop) or ((not call_) and adv >= stop):
+            if vendeu1:
+                caixa += resto * min(ot.valor(call_, stop, K, dl, vol), entry * 0.9) * 0.97
+            else:
+                caixa += resto * ot.valor(call_, stop, K, dl, vol) * 0.97
+            return caixa / entry - 1
+        vf = ot.valor(call_, fav, K, dl, vol)
+        if tp1 is not None and not vendeu1 and vf >= entry * (1 + tp1):
+            caixa += 0.5 * entry * (1 + tp1) * 0.97; resto = 0.5; vendeu1 = True
+        if tp2 is not None and vendeu1 and resto and vf >= entry * (1 + tp2):
+            caixa += 0.5 * entry * (1 + tp2) * 0.97; resto = 0
+            return caixa / entry - 1
+        if vendeu1 and resto and ot.valor(call_, adv, K, dl, vol) <= entry * 0.9:
+            caixa += resto * entry * 0.9 * 0.97; resto = 0      # depois do 1o lucro, o resto sai se a opcao voltar a -10% do preco de compra
+            return caixa / entry - 1
+    b = prazo_b[-1]
+    caixa += resto * ot.valor(call_, b["close"], K, (venc - dia_de(b)).days, vol) * 0.97
+    return caixa / entry - 1
+
+def _diag_saidas():
+    """Comando 'saidas' (so leitura): em 1 ano de rompimentos diarios de 20 dias, compara a saida atual do robo com saidas por lucro (vender metade quando a opcao sobe +30/+50/+100% e deixar o resto correr), delta 0,5, vencimento mensal proximo."""
+    import opcao_teste as ot
+    from statistics import median
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "1y", "1d")
+    bc = {dia_de(b): b["close"] for b in bova}; bd = sorted(bc)
+    POL = [("Robô atual: 10 pregões, alvo 1:2", "robo"),
+           ("Segurar até 1 dia antes do vencimento, sem realizar lucro", (None, None)),
+           ("Metade em +30%, resto em +60%", (0.3, 0.6)),
+           ("Metade em +50%, resto em +100%", (0.5, 1.0)),
+           ("Metade em +100%, resto em +200%", (1.0, 2.0)),
+           ("Metade em +50%, resto corre até o vencimento", (0.5, None))]
+    acc, erros = {}, 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "1y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_saidas %s: %s", t, e); continue
+        ult = {}
+        last = dia_de(daily[-1])
+        for i in range(60, len(daily) - 1):
+            c = daily[i]; a = analyzer.atr(daily[:i + 1])
+            if not a:
+                continue
+            dia = dia_de(c)
+            for dr in ("long", "short"):
+                ant = daily[i - 20:i]
+                ok = c["close"] > max(d["high"] for d in ant) if dr == "long" else c["close"] < min(d["low"] for d in ant)
+                if not ok or i - ult.get(dr, -99) < 5:
+                    continue
+                ult[dr] = i
+                sgn = 1 if dr == "long" else -1
+                risco = 1.5 * a
+                sg = dict(direction=dr, price=c["close"], stop=c["close"] - sgn * risco, target=c["close"] + sgn * config.RR_TARGET * risco, _dia=dia)
+                venc = ot.vencimentos(dia, 1)[0]
+                if (venc - last).days > 1:      # ainda nao chegou perto do vencimento: aberto, fora do teste
+                    continue
+                bars = daily[i + 1:]
+                call = dr == "long"
+                vol = ot.sigma_hist(daily, dia)
+                K = ot.strike_por_delta(call, c["close"], (venc - dia).days / 365.0, vol, 0.5)
+                bs = [bc[d] for d in bd if d <= dia]
+                b20 = _sma(bs, 20)
+                grupos = ["todos"] + ([("BOVA11 a favor" if ((bs[-1] > b20) == call) else "BOVA11 contra")] if b20 else [])
+                for nome, p in POL:
+                    if p == "robo":
+                        r = ot.retorno(sg, dia, bars, venc, 0.5, config.TIME_EXIT_DAYS, vol)
+                    else:
+                        r = _ret_saida(sg, bars, venc, call, K, vol, p[0], p[1])
+                    if r is not None:
+                        for g in grupos:
+                            acc.setdefault((g, nome), []).append(r)
+    L = [f"Saídas por lucro (último ano, {len(config.UNIVERSE) - erros} ativos, rompimento 20d diário, opção delta 0,5 do mensal próximo, só trades já encerrados no vencimento). Estimativa Black-Scholes, custo 3% por lado; gatilho no extremo do dia, então é otimista.", ""]
+    for g in ("todos", "BOVA11 a favor", "BOVA11 contra"):
+        n0 = len(acc.get((g, POL[0][0]), []))
+        L.append(f"{g} ({n0} sinais)")
+        for nome, _ in POL:
+            x = acc.get((g, nome), [])
+            if x:
+                L.append(f"  {nome}: média {sgn_(sum(x) / len(x) * 100)} · mediana {sgn_(median(x) * 100)} · positivos {sum(1 for v in x if v > 0) / len(x) * 100:.0f}%")
+        L.append("")
+    L.append("Compara regras de saída nos mesmos sinais. Não é preço real e não prova lucro.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1486,7 +1598,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1723,6 +1835,8 @@ def serve():
         s.add_job(_once_key("cenarios:2026-11-10", job_diag_cenarios), "date", run_date=now() + timedelta(seconds=140), id="cenarios_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de exemplos
         s.add_job(_once_key("exemplos:2026-11-10", job_diag_exemplos), "date", run_date=now() + timedelta(seconds=150), id="exemplos_once")
+    if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de saidas
+        s.add_job(_once_key("saidas:2026-11-10", job_diag_saidas), "date", run_date=now() + timedelta(seconds=160), id="saidas_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
