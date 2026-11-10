@@ -1398,6 +1398,14 @@ def _diag_cenarios():
     L.append("Acerto perto de 50% = sem vantagem. Compare cada rompimento com a linha de seguir só o mercado.")
     messenger.send("\n".join(L))
 
+def job_diag_exemplos2():
+    """Comando 'exemplos2': WEGE3 (put), B3SA3 (put) e VALE3 (call) em outubro, ativos das opcoes WEGEV510, B3SAW199 e VALEK706 citadas pelo usuario."""
+    try:
+        _diag_exemplos({"WEGE3": "short", "B3SA3": "short", "VALE3": "long"}, date(2026, 10, 1), date(2026, 11, 2), "Exemplos de outubro (WEGEV510, B3SAW199, VALEK706)")
+    except Exception as e:
+        log.exception("diag_exemplos2 falhou")
+        messenger.send(f"Teste de exemplos de outubro falhou: {type(e).__name__}: {str(e)[:200]}")
+
 def job_diag_exemplos():
     try:
         _diag_exemplos()
@@ -1405,16 +1413,18 @@ def job_diag_exemplos():
         log.exception("diag_exemplos falhou")
         messenger.send(f"Teste de exemplos falhou: {type(e).__name__}: {str(e)[:200]}")
 
-def _diag_exemplos():
+def _diag_exemplos(ex=None, ini=None, fim=None, titulo=None):
     """Comando 'exemplos' (so leitura): nos ativos dos exemplos do usuario, o melhor movimento (fundo ate pico) desde 03/11, quanto uma call/put ATM teria rendido nele (Black-Scholes), e se a regra do robo sinalizou no caminho."""
     import opcao_teste as ot
     api, hoje = Brapi(), now().date()
-    ini = date(2026, 11, 3)
+    ini = ini or date(2026, 11, 3)
+    fim = fim or date(2026, 12, 31)
     dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
-    EX = ["PETR4", "PRIO3", "USIM5", "UGPA3", "ITUB4", "B3SA3", "SIMH3", "ASAI3"]
+    ex = ex or {t: None for t in ["PETR4", "PRIO3", "USIM5", "UGPA3", "ITUB4", "B3SA3", "SIMH3", "ASAI3"]}
+    EX = list(ex)
     bd = api.history("BOVA11", "3mo", "1d")
-    bj = [d for d in bd if dia_de(d) >= ini]
-    L = ["Exemplos: o que aconteceu desde 03/11 (estimativa Black-Scholes, opção ATM do vencimento mensal próximo, custo 3% por lado)"]
+    bj = [d for d in bd if ini <= dia_de(d) <= fim]
+    L = [(titulo or "Exemplos") + f": o que aconteceu de {ini.strftime('%d/%m')} em diante (estimativa Black-Scholes, opção ATM do vencimento mensal próximo, custo 3% por lado)"]
     if len(bj) > 1:
         cb = [d["close"] for d in bj]
         L.append(f"BOVA11: fundo {fmt_(min(cb))} em {dia_de(bj[cb.index(min(cb))]).strftime('%d/%m')}, último {fmt_(cb[-1])} ({sgn_((cb[-1] / min(cb) - 1) * 100)} do fundo)")
@@ -1423,7 +1433,7 @@ def _diag_exemplos():
         try:
             daily = api.history(t, "3mo", "1d"); m15 = api.history(t, "1mo", "15m")
             ant = [d for d in daily if dia_de(d) < ini]
-            w = [d for d in daily if dia_de(d) >= ini]
+            w = [d for d in daily if ini <= dia_de(d) <= fim]
             if len(w) < 3 or not ant:
                 L.append(f"{t}: sem dados"); continue
             serie = [ant[-1]] + w
@@ -1431,7 +1441,7 @@ def _diag_exemplos():
             il = min(range(len(cl) - 1), key=lambda k: cl[k]); ih = max(range(il + 1, len(cl)), key=lambda k: cl[k]) if il < len(cl) - 1 else il
             sh = max(range(len(cl) - 1), key=lambda k: cl[k]); sl = min(range(sh + 1, len(cl)), key=lambda k: cl[k]) if sh < len(cl) - 1 else sh
             up, dn = cl[ih] / cl[il] - 1, cl[sh] / cl[sl] - 1
-            long_ = up >= dn
+            long_ = up >= dn if not ex.get(t) else ex[t] == "long"
             i0, i1 = (il, ih) if long_ else (sh, sl)
             mov = (cl[i1] / cl[i0] - 1) * (1 if long_ else -1) * 100
             d0, d1 = dia_de(serie[i0]), dia_de(serie[i1])
@@ -1442,18 +1452,25 @@ def _diag_exemplos():
                 return ot.valor(long_, S, K, (venc - dia_).days, sig)
             v0, v1 = op(cl[i0], d0), op(cl[i1], d1)
             ret = (v1 * 0.97) / (v0 * 1.03) - 1 if v0 > 0 else 0
-            dias = " ".join(f"{dia_de(serie[k]).strftime('%d')}:{sgn_((cl[k] / cl[k - 1] - 1) * 100)}" for k in range(1, len(cl)))
+            dias = " ".join(f"{dia_de(serie[k]).strftime('%d/%m' if titulo else '%d')}:{sgn_((cl[k] / cl[k - 1] - 1) * 100)}" for k in range(1, len(cl)))
             sinais = _replay_conf(daily, m15, t, config.M15_CONFIRM_CLOSES, hoje)
             dr = "long" if long_ else "short"
             sg = [(k[0], v) for k, v in sorted(sinais.items()) if k[1] == dr and ini <= k[0] <= d1]
+            ini15 = min((dia_de(c) for c in m15), default=None)
             L.append(f"{t} {'call' if long_ else 'put'}: do fundo {d0.strftime('%d/%m')} a {fmt_(cl[i0])} ao pico {d1.strftime('%d/%m')} a {fmt_(cl[i1])} = {sgn_(mov)} na ação, opção ATM estimada {sgn_(ret * 100)}")
             L.append(f"  dias: {dias}")
             if sg:
                 dd, v = sg[0]
                 r2 = (ot.valor(long_, cl[i1], v["price"], (venc - d1).days, sig) * 0.97) / (ot.valor(long_, v["price"], v["price"], (venc - dd).days, sig) * 1.03) - 1
                 L.append(f"  regra sinalizou {dd.strftime('%d/%m')} {v['hora']} a {fmt_(v['price'])}: até o pico, opção estimada {sgn_(r2 * 100)}")
+            elif ini15 and ini15 > d0:
+                L.append(f"  sem candles de 15 min antes de {ini15.strftime('%d/%m')}: não dá para refazer a regra do robô nesse trecho")
             else:
                 L.append("  regra do robô não sinalizou nesse sentido antes do pico")
+            with database.conn() as c_:
+                rs = c_.execute("SELECT date, payload FROM alerts WHERE ticker = ? AND direction = ? AND date >= ? AND date <= ? ORDER BY date", (t, dr, str(ini), str(fim))).fetchall()
+            if rs:
+                L.append("  alertas do robô nesse sentido: " + ", ".join(f"{r['date'][8:10]}/{r['date'][5:7]} ({'enviado' if json.loads(r['payload']).get('option') and not json.loads(r['payload']).get('ruim') and not json.loads(r['payload']).get('bloq_mercado') else 'não enviado'})" for r in rs))
         except Exception as e:
             L.append(f"{t}: erro {type(e).__name__}")
             log.warning("diag_exemplos %s: %s", t, e)
@@ -1691,7 +1708,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1932,6 +1949,8 @@ def serve():
         s.add_job(_once_key("saidas:2026-11-10", job_diag_saidas), "date", run_date=now() + timedelta(seconds=160), id="saidas_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de continuacao
         s.add_job(_once_key("continuacao:2026-11-10", job_diag_continuacao), "date", run_date=now() + timedelta(seconds=170), id="continuacao_once")
+    if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico dos exemplos de outubro
+        s.add_job(_once_key("exemplos2:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=180), id="exemplos2_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
