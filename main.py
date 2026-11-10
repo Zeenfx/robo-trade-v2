@@ -1245,6 +1245,96 @@ def _diag_opcao():
     L.append("Só ordena escolhas; não é preço real. Retorno sobre o prêmio, antes de corretagem.")
     messenger.send("\n".join(L))
 
+def _sma(v, n):
+    return sum(v[-n:]) / n if len(v) >= n else None
+
+def _sinais_recuo(daily, bova):
+    """Teste diario (1 ano): rompimento de 20 dias x recuo dentro da tendencia. Mesmo stop (1,5 ATR) e alvo (RR_TARGET) em todas as regras.
+    Retorna {regra: [(indice_do_dia, sinal dict)]}. Entrada no fechamento do dia do sinal."""
+    out = {"Rompimento 20d (diário)": [], "Recuo na tendência": [], "Recuo + BOVA11 a favor": []}
+    ult = {}
+    bclose = {datetime.fromtimestamp(b["date"], TZ).date(): b["close"] for b in bova}
+    bdias = sorted(bclose)
+    for i in range(60, len(daily) - 1):
+        h = daily[:i + 1]; c = h[-1]; ant = h[:-1]
+        a = analyzer.atr(h)
+        cl = [d["close"] for d in h]
+        s20, s50 = _sma(cl, 20), _sma(cl, 50)
+        if not a or not s20 or not s50:
+            continue
+        dia = datetime.fromtimestamp(c["date"], TZ).date()
+        bs = [bclose[d] for d in bdias if d <= dia]
+        b20 = _sma(bs, 20)
+        for dr in ("long", "short"):
+            sg = 1 if dr == "long" else -1
+            def mk():
+                risco = 1.5 * a
+                return dict(ticker="", direction=dr, price=c["close"], stop=c["close"] - sg * risco, target=c["close"] + sg * config.RR_TARGET * risco, atr=a)
+            if dr == "long":
+                romp = c["close"] > max(d["high"] for d in ant[-20:])
+                tend = c["close"] > s50 and s20 > s50
+                toque = min(d["low"] for d in h[-5:]) <= s20 + 0.5 * a
+                fundo = max(d["high"] for d in h[-10:]) - c["close"] >= a
+                virou = c["close"] > c["open"] and c["close"] > ant[-1]["close"]
+                mercado = bool(bs and b20 and bs[-1] > b20)
+            else:
+                romp = c["close"] < min(d["low"] for d in ant[-20:])
+                tend = c["close"] < s50 and s20 < s50
+                toque = max(d["high"] for d in h[-5:]) >= s20 - 0.5 * a
+                fundo = c["close"] - min(d["low"] for d in h[-10:]) >= a
+                virou = c["close"] < c["open"] and c["close"] < ant[-1]["close"]
+                mercado = bool(bs and b20 and bs[-1] < b20)
+            for nome, ok in (("Rompimento 20d (diário)", romp), ("Recuo na tendência", tend and toque and fundo and virou), ("Recuo + BOVA11 a favor", tend and toque and fundo and virou and mercado)):
+                if ok and i - ult.get((nome, dr), -99) >= 5:
+                    ult[(nome, dr)] = i
+                    out[nome].append((i, mk()))
+    return out
+
+def job_diag_recuo():
+    try:
+        _diag_recuo()
+    except Exception as e:
+        log.exception("diag_recuo falhou")
+        messenger.send(f"Teste de recuo falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_recuo():
+    """Comando 'recuo' (so leitura): 1 ano de candles diarios nos ativos; compara rompimento de 20 dias com recuo dentro da tendencia (e com BOVA11 a favor), mesmo stop e alvo."""
+    api = Brapi()
+    bova = api.history("BOVA11", "1y", "1d")
+    acc, erros, ndias = {}, 0, 0
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "1y", "1d")
+            ndias = max(ndias, len(daily))
+            for nome, lst in _sinais_recuo(daily, bova).items():
+                for i, sg in lst:
+                    res = outcomes.avaliar(sg, daily[i + 1:])
+                    if res:
+                        acc.setdefault(nome, []).append((i, len(daily), res))
+        except Exception as e:
+            erros += 1
+            log.warning("diag_recuo %s: %s", t, e)
+    L = [f"Recuo na tendência x rompimento (diário, até 1 ano, {len(config.UNIVERSE) - erros} ativos). Mesmo stop de 1,5 ATR e alvo 1:{config.RR_TARGET:g}; só resolvidos.", ""]
+    for nome in ("Rompimento 20d (diário)", "Recuo na tendência", "Recuo + BOVA11 a favor"):
+        x = acc.get(nome, [])
+        if not x:
+            L.append(f"{nome}: sem sinais"); continue
+        def lin(sub, rot):
+            if not sub:
+                return f"  {rot}: sem sinais"
+            al = sum(1 for _, _, r in sub if r[0] == "alvo"); sa = sum(1 for _, _, r in sub if r[0] == "saida")
+            mv = sum(r[2] for _, _, r in sub) / len(sub)
+            return f"  {rot}: {len(sub)} · alvo {al / len(sub) * 100:.0f}% · saída {sa / len(sub) * 100:.0f}% · prazo {(len(sub) - al - sa) / len(sub) * 100:.0f}% · média na ação {mv:+.2f}%".replace(".", ",")
+        L.append(nome)
+        L.append(lin(x, "Total"))
+        meio = max(n for _, n, _ in x) // 2 + 30
+        L.append(lin([k for k in x if k[0] < meio], "1ª metade"))
+        L.append(lin([k for k in x if k[0] >= meio], "2ª metade"))
+        L.append(lin([k for k in x if k[0] >= k[1] - 22], "Último mês"))
+        L.append("")
+    L.append("Equilíbrio com esse payoff: alvo em cerca de 20%. Ação, não opção; sem custos.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1270,7 +1360,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1501,6 +1591,8 @@ def serve():
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de opcao (a chave impede repetir)
         s.add_job(_once_key("opcao2:2026-11-10", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
+    if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de recuo
+        s.add_job(_once_key("recuo:2026-11-10", job_diag_recuo), "date", run_date=now() + timedelta(seconds=130), id="recuo_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
