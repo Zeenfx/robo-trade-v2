@@ -1401,7 +1401,7 @@ def _diag_cenarios():
 def job_diag_exemplos2():
     """Comando 'exemplos2': WEGE3 (put), B3SA3 (put) e VALE3 (call) em outubro, ativos das opcoes WEGEV510, B3SAW199 e VALEK706 citadas pelo usuario."""
     try:
-        _diag_exemplos({"WEGE3": "short", "B3SA3": "short", "VALE3": "long"}, date(2026, 10, 1), date(2026, 11, 2), "Exemplos de outubro (WEGEV510, B3SAW199, VALEK706)")
+        _diag_exemplos({"WEGE3": "short", "B3SA3": "short", "VALE3": "long"}, date(2026, 10, 1), date(2026, 10, 27), "Exemplos de outubro (saída antes de 28/10) (WEGEV510, B3SAW199, VALEK706)")
     except Exception as e:
         log.exception("diag_exemplos2 falhou")
         messenger.send(f"Teste de exemplos de outubro falhou: {type(e).__name__}: {str(e)[:200]}")
@@ -1950,7 +1950,7 @@ def serve():
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de continuacao
         s.add_job(_once_key("continuacao:2026-11-10", job_diag_continuacao), "date", run_date=now() + timedelta(seconds=170), id="continuacao_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico dos exemplos de outubro
-        s.add_job(_once_key("exemplos2:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=180), id="exemplos2_once")
+        s.add_job(_once_key("exemplos2b:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=180), id="exemplos2_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
