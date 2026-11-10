@@ -1573,6 +1573,99 @@ def _diag_saidas():
     L.append("Compara regras de saída nos mesmos sinais. Não é preço real e não prova lucro.")
     messenger.send("\n".join(L))
 
+def job_diag_continuacao():
+    try:
+        _diag_continuacao()
+    except Exception as e:
+        log.exception("diag_continuacao falhou")
+        messenger.send(f"Teste de continuação falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_continuacao():
+    """Comando 'continuacao' (so leitura): 1 ano de candles diarios; depois de um dia forte (3%, 4% ou 6% ou mais) a acao continua no mesmo sentido? Separa por BOVA11 no mesmo dia (a favor/contra/neutro) e testa saidas por lucro na opcao."""
+    import opcao_teste as ot
+    from statistics import median
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "1y", "1d")
+    bchg = {dia_de(b): (b["close"] / a["close"] - 1) * 100 for a, b in zip(bova[:-1], bova[1:])}
+    HZ = (1, 2, 5, 10)
+    fw, mk, op = {}, {}, {}
+    dias_ev, erros = {}, 0
+    POL = [("Robô atual (10 pregões, alvo 1:2)", "robo"), ("Metade em +30%, resto em +60%", (0.3, 0.6)), ("Metade em +50%, resto em +100%", (0.5, 1.0)), ("Segurar até 1 dia antes do vencimento", (None, None))]
+    for t in config.UNIVERSE:
+        try:
+            daily = api.history(t, "1y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_continuacao %s: %s", t, e); continue
+        n = len(daily); last = dia_de(daily[-1]); ult = {}
+        for i in range(30, n - 1):
+            chg = (daily[i]["close"] / daily[i - 1]["close"] - 1) * 100
+            dr = "long" if chg > 0 else "short"; sg_ = 1 if chg > 0 else -1
+            dia = dia_de(daily[i])
+            for lim in (3, 4, 6):
+                if abs(chg) < lim or i - ult.get((lim, dr), -99) < 3:
+                    continue
+                ult[(lim, dr)] = i
+                dias_ev.setdefault(lim, set()).add(dia)
+                for h in HZ:
+                    if i + h < n:
+                        m = (daily[i + h]["close"] / daily[i]["close"] - 1) * sg_ * 100
+                        a = fw.setdefault((lim, h), [0, 0, 0.0]); a[0] += 1; a[1] += m > 0; a[2] += m
+                if lim != 4:
+                    continue
+                bm = bchg.get(dia)
+                if bm is None:
+                    continue
+                bs = bm * sg_
+                g = "BOVA11 a favor (±0,7% ou mais)" if bs >= 0.7 else "BOVA11 contra (±0,7% ou mais)" if bs <= -0.7 else "BOVA11 neutro"
+                for h in (1, 2, 5):
+                    if i + h < n:
+                        m = (daily[i + h]["close"] / daily[i]["close"] - 1) * sg_ * 100
+                        a = mk.setdefault((g, h), [0, 0, 0.0]); a[0] += 1; a[1] += m > 0; a[2] += m
+                a_ = analyzer.atr(daily[:i + 1])
+                if not a_:
+                    continue
+                call = dr == "long"
+                risco = 1.5 * a_
+                sg = dict(direction=dr, price=daily[i]["close"], stop=daily[i]["close"] - sg_ * risco, target=daily[i]["close"] + sg_ * config.RR_TARGET * risco, _dia=dia)
+                venc = ot.vencimentos(dia, 1)[0]
+                if (venc - last).days > 1:
+                    continue
+                vol = ot.sigma_hist(daily, dia)
+                K = ot.strike_por_delta(call, sg["price"], (venc - dia).days / 365.0, vol, 0.5)
+                for nome, p in POL:
+                    r = ot.retorno(sg, dia, daily[i + 1:], venc, 0.5, config.TIME_EXIT_DAYS, vol) if p == "robo" else _ret_saida(sg, daily[i + 1:], venc, call, K, vol, p[0], p[1])
+                    if r is not None:
+                        for gg in ("todos", g):
+                            op.setdefault((gg, nome), []).append(r)
+    ln = lambda a: f"{a[1] / a[0] * 100:.0f}% {a[2] / a[0]:+.2f}%".replace(".", ",")
+    L = [f"Continuação depois de dia forte (1 ano, {len(config.UNIVERSE) - erros} ativos). Entrada no fechamento do dia forte; % de casos em que a ação seguiu no mesmo sentido · média do movimento.", ""]
+    for lim in (3, 4, 6):
+        a1 = fw.get((lim, 1))
+        if not a1:
+            continue
+        L.append(f"Dia de {lim}% ou mais ({a1[0]} casos em {len(dias_ev[lim])} dias):")
+        L.append("  " + " · ".join(f"{h}d {ln(fw[(lim, h)])}" for h in HZ if (lim, h) in fw))
+    L.append("")
+    L.append("Dia de 4% ou mais, separado pelo BOVA11 no mesmo dia:")
+    for g in ("BOVA11 a favor (±0,7% ou mais)", "BOVA11 neutro", "BOVA11 contra (±0,7% ou mais)"):
+        if (g, 1) in mk:
+            L.append(f"  {g} ({mk[(g, 1)][0]}): " + " · ".join(f"{h}d {ln(mk[(g, h)])}" for h in (1, 2, 5) if (g, h) in mk))
+    L.append("")
+    L.append("Opção delta 0,5 do mensal próximo depois de dia de 4% ou mais (estimativa, custo 3% por lado, gatilho no extremo do dia; só trades já encerrados no vencimento):")
+    for gg in ("todos", "BOVA11 neutro", "BOVA11 contra (±0,7% ou mais)"):
+        n0 = len(op.get((gg, POL[0][0]), []))
+        if not n0:
+            continue
+        L.append(f"{gg} ({n0}):")
+        for nome, _ in POL:
+            x = op.get((gg, nome), [])
+            if x:
+                L.append(f"  {nome}: média {sgn_(sum(x) / len(x) * 100)} · mediana {sgn_(median(x) * 100)} · positivos {sum(1 for v in x if v > 0) / len(x) * 100:.0f}%")
+    L.append("")
+    L.append("Acerto perto de 50% = sem vantagem. Dias fortes se agrupam em poucos dias de mercado, então a amostra efetiva é menor que o número de casos.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1598,7 +1691,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -1837,6 +1930,8 @@ def serve():
         s.add_job(_once_key("exemplos:2026-11-10", job_diag_exemplos), "date", run_date=now() + timedelta(seconds=150), id="exemplos_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de saidas
         s.add_job(_once_key("saidas:2026-11-10", job_diag_saidas), "date", run_date=now() + timedelta(seconds=160), id="saidas_once")
+    if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico do teste de continuacao
+        s.add_job(_once_key("continuacao:2026-11-10", job_diag_continuacao), "date", run_date=now() + timedelta(seconds=170), id="continuacao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
