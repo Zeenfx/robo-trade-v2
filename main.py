@@ -1180,6 +1180,13 @@ def job_diag_forte():
     messenger.send("\n".join(L))
 
 def job_diag_opcao():
+    try:
+        _diag_opcao()
+    except Exception as e:
+        log.exception("diag_opcao falhou")
+        messenger.send(f"Teste de opção falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_opcao():
     """Comando 'opcao' (so leitura): nos sinais do ultimo mes, retorno estimado da opcao por vencimento mensal (proximo x seguinte) e delta (0,3/0,5/0,7), saindo em 10 pregoes ou ate 1 dia antes do vencimento (com parcial de metade)."""
     import opcao_teste as ot
     from statistics import median
@@ -1489,7 +1496,7 @@ def serve():
         s.add_job(_once_key("dias:2026-11-09", job_comparar_dias), "date", run_date=now() + timedelta(seconds=100), id="dias_once")
         s.add_job(_once_key("repique:2026-11-09", job_diag_repique), "date", run_date=now() + timedelta(seconds=110), id="repique_once")
         s.add_job(_once_key("forte:2026-11-09", job_diag_forte), "date", run_date=now() + timedelta(seconds=115), id="forte_once")
-        s.add_job(_once_key("opcao:2026-11-09", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
+        s.add_job(_once_key("opcao2:2026-11-10", job_diag_opcao), "date", run_date=now() + timedelta(seconds=120), id="opcao_once")
     if now().date() == date(2026, 11, 9):   # envio unico: o que separa rompimentos que dao certo
         s.add_job(_once_key("fatores:2026-11-09", job_diag_fatores), "date", run_date=now() + timedelta(seconds=80), id="fatores_once")
         s.add_job(_once_key("bova:2026-11-09", job_diag_bova), "date", run_date=now() + timedelta(seconds=85), id="bova_once")
