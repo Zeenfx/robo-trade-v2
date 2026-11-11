@@ -1940,6 +1940,102 @@ def _diag_setores():
     L_.append("Casos se agrupam em poucos dias de mercado. Ação, sem opção e sem custos. Diferença de poucos pontos de 50% é ruído; só vale o que se mantém acima de 55% nas duas metades.")
     messenger.send("\n".join(L_))
 
+def job_diag_empilhar():
+    try:
+        _diag_empilhar()
+    except Exception as e:
+        log.exception("diag_empilhar falhou")
+        messenger.send(f"Teste de filtros empilhados falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_empilhar():
+    """Comando 'empilhar' (so leitura): empilha leituras de direcao (setor 10d, forca relativa 10d, BOVA11 a favor, perto do extremo + movimento de 5 dias) em 6 combinacoes fixas e mede +3% antes de -3% em 20 pregoes. Inclui a combinacao completa na direcao contraria como prova de sanidade."""
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "1y", "1d")
+    bcl = [b["close"] for b in bova]; bidx = {dia_de(b): k for k, b in enumerate(bova)}
+    sec_of = {t: s for s, ts in SETORES.items() for t in ts}
+    dados, erros = {}, 0
+    for t in config.UNIVERSE:
+        if t not in sec_of:
+            continue
+        try:
+            dados[t] = api.history(t, "1y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_empilhar %s: %s", t, e)
+    idx = {t: {dia_de(b): k for k, b in enumerate(dl)} for t, dl in dados.items()}
+    r10 = {}
+    for t, dl in dados.items():
+        for d, k in idx[t].items():
+            if k >= 10:
+                r10[(t, d)] = dl[k]["close"] / dl[k - 10]["close"] - 1
+    b10 = {d: bcl[k] / bcl[k - 10] - 1 for d, k in bidx.items() if k >= 10}
+    por_dia = {}
+    for (t, d), v in r10.items():
+        por_dia.setdefault(d, {}).setdefault(sec_of[t], []).append((t, v))
+    setor, rs = {}, {}
+    for d, secs in por_dia.items():
+        if d not in b10: continue
+        for sec, mem in secs.items():
+            for t, v in mem:
+                rs[(t, d)] = (v - b10[d]) * 100
+                outros = [x for m, x in mem if m != t]
+                if outros:
+                    setor[(t, d)] = (sum(outros) / len(outros) - b10[d]) * 100
+    def quant(m):
+        dd = {}
+        for (t, d), v in m.items():
+            dd.setdefault(d, []).append(v)
+        return {d: (sorted(v)[int(len(v) * 0.2)], sorted(v)[min(len(v) - 1, int(len(v) * 0.8))]) for d, v in dd.items() if len(v) >= 10}
+    qs, qr = quant(setor), quant(rs)
+    acc = {}
+    def add(g, dia, w3, w5, half):
+        a = acc.setdefault(g, dict(d=set(), n3=0, w3=0, n5=0, w5=0, h=[[0, 0], [0, 0]]))
+        if w3 is not None:
+            a["d"].add(dia); a["n3"] += 1; a["w3"] += w3; a["h"][half][0] += 1; a["h"][half][1] += w3
+        if w5 is not None:
+            a["n5"] += 1; a["w5"] += w5
+    for t, dl in dados.items():
+        n = len(dl)
+        for d, k in idx[t].items():
+            if k < 60 or k >= n - 1 or d not in bidx or bidx[d] < 21 or (t, d) not in setor or d not in qs or d not in qr:
+                continue
+            kb = bidx[d]
+            acima = bcl[kb] > sum(bcl[kb - 19:kb + 1]) / 20
+            c = dl[k]["close"]; mom5 = (c / dl[k - 5]["close"] - 1) * 100
+            h20 = max(b["high"] for b in dl[k - 20:k]); l20 = min(b["low"] for b in dl[k - 20:k])
+            half = 0 if k < n // 2 else 1
+            for dr in ("long", "short"):
+                lg = dr == "long"
+                A = setor[(t, d)] >= qs[d][1] if lg else setor[(t, d)] <= qs[d][0]
+                B = rs[(t, d)] >= qr[d][1] if lg else rs[(t, d)] <= qr[d][0]
+                C = acima == lg
+                D = ((c >= 0.98 * h20) if lg else (c <= 1.02 * l20)) and (mom5 >= 4 if lg else mom5 <= -4)
+                w3, w5 = _barreira(dl, k, dr, 0.03), _barreira(dl, k, dr, 0.05)
+                add("Todos os dias (referência, call)" if lg else "Todos os dias (referência, put)", d, w3, w5, half)
+                if A: add("1. Setor a favor", d, w3, w5, half)
+                if A and B: add("2. Setor + força relativa a favor", d, w3, w5, half)
+                if A and C: add("3. Setor + BOVA11 a favor", d, w3, w5, half)
+                if B and C: add("4. Força relativa + BOVA11 a favor", d, w3, w5, half)
+                if A and B and C: add("5. Setor + força relativa + BOVA11 a favor", d, w3, w5, half)
+                if A and B and C and D: add("6. Os três + perto do extremo com movimento de 5 dias", d, w3, w5, half)
+                # prova de sanidade: combinacao 5 na direcao contraria (call onde o setor/forca/mercado apontam para put e vice-versa)
+                A2 = setor[(t, d)] <= qs[d][0] if lg else setor[(t, d)] >= qs[d][1]
+                B2 = rs[(t, d)] <= qr[d][0] if lg else rs[(t, d)] >= qr[d][1]
+                C2 = acima != lg
+                if A2 and B2 and C2: add("Sanidade: combinação 5 invertida (operando contra)", d, w3, w5, half)
+    L = [f"Filtros empilhados (último ano, {len(dados)} ativos mapeados). Chance de +3% a favor antes de −3% contra em até 20 pregões (e 5%). Sem vantagem = 50%. 6 combinações fixas definidas antes do teste.", ""]
+    ordem = ["Todos os dias (referência, call)", "Todos os dias (referência, put)", "1. Setor a favor", "2. Setor + força relativa a favor", "3. Setor + BOVA11 a favor", "4. Força relativa + BOVA11 a favor",
+             "5. Setor + força relativa + BOVA11 a favor", "6. Os três + perto do extremo com movimento de 5 dias", "Sanidade: combinação 5 invertida (operando contra)"]
+    for g in ordem:
+        a = acc.get(g)
+        if not a or not a["n3"]:
+            L.append(f"{g}: sem casos"); continue
+        h = lambda x: f"{x[1] / x[0] * 100:.0f}%" if x[0] else "-"
+        L.append(f"{g}: {a['n3']} casos em {len(a['d'])} dias · 3%: {a['w3'] / a['n3'] * 100:.0f}% · 5%: " + (f"{a['w5'] / a['n5'] * 100:.0f}%" if a["n5"] else "-") + f" · 1ª metade {h(a['h'][0])} · 2ª metade {h(a['h'][1])}")
+    L.append("")
+    L.append("Quanto mais filtros, menos casos e mais risco de ruído parecer vantagem. Só vale o que passa de 55% nas duas metades e com muitos dias distintos. Ação, sem opção e sem custos.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1965,7 +2061,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2214,6 +2310,8 @@ def serve():
         s.add_job(_once_key("direcao:2026-11-11", job_diag_direcao), "date", run_date=now() + timedelta(seconds=120), id="direcao_once")
     if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de setores
         s.add_job(_once_key("setores:2026-11-11", job_diag_setores), "date", run_date=now() + timedelta(seconds=150), id="setores_once")
+    if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de filtros empilhados
+        s.add_job(_once_key("empilhar:2026-11-11", job_diag_empilhar), "date", run_date=now() + timedelta(seconds=170), id="empilhar_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
