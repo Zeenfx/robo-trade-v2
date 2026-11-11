@@ -854,3 +854,16 @@ def test_filtro_mercado(monkeypatch, tmp_path):
 
 def _approx(a, b):
     return abs(a - b) < 1e-9
+
+
+def test_linha_balancos_bom_dia():
+    import balancos
+    from datetime import date
+    # 11/11/2026 (quarta): ontem = 10/11 (PETR4, EMBR3, BPAC11), hoje = 11/11 (BBAS3, RAIL3)
+    ln = balancos.linha_bom_dia(["PETR4", "EMBR3", "BBAS3", "RAIL3", "VALE3"], date(2026, 11, 11))
+    assert "divulgaram 10/11: PETR4, EMBR3" in ln and "divulgam hoje: BBAS3, RAIL3" in ln and "VALE3" not in ln
+    # segunda-feira: pregao anterior e a sexta
+    assert balancos._pregao_anterior(date(2026, 11, 9)) == date(2026, 11, 6)
+    # 03/11: o dia 02/11 (feriado) e pulado
+    assert balancos._pregao_anterior(date(2026, 11, 3)) == date(2026, 10, 30)
+    assert balancos.linha_bom_dia(["VALE3"], date(2026, 11, 11)) == ""

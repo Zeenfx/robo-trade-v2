@@ -55,3 +55,25 @@ def texto(ticker, today, fim):
     if d == today:
         return f"⚠️ Balanço de {ticker} HOJE (confira o horário)"
     return f"⚠️ Balanço de {ticker} em {d.strftime('%d/%m')}, dentro do prazo"
+
+
+def _pregao_anterior(d):
+    from datetime import timedelta
+    import positions
+    d -= timedelta(days=1)
+    while d.weekday() >= 5 or str(d) in positions.FERIADOS:
+        d -= timedelta(days=1)
+    return d
+
+
+def linha_bom_dia(universo, hoje):
+    """Linha do bom dia: quem divulgou balanco no pregao anterior e quem divulga hoje, nos ativos do universo (so pelo calendario; o horario nao e conhecido). '' se ninguem."""
+    ont = _pregao_anterior(hoje)
+    ontem = [t for t in universo if entre(t, ont, ont)]
+    hoje_l = [t for t in universo if entre(t, hoje, hoje)]
+    partes = []
+    if ontem:
+        partes.append(f"divulgaram {ont.strftime('%d/%m')}: " + ", ".join(ontem))
+    if hoje_l:
+        partes.append("divulgam hoje: " + ", ".join(hoje_l))
+    return ("Balanços (pelo calendário, confira o horário): " + " · ".join(partes)) if partes else ""

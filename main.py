@@ -2237,6 +2237,13 @@ def job_morning():
                 L.append(f"⚠️ Balanço de {t} {'HOJE' if d == hoje else 'amanhã'} (você tem posição)")
     except Exception as e:
         log.warning("Aviso de balanço: %s", e)
+    try:   # balancos do pregao anterior e de hoje em qualquer dos ativos do universo (so o calendario; o conteudo e lido a parte)
+        import balancos
+        lb = balancos.linha_bom_dia(config.UNIVERSE, now().date())
+        if lb:
+            L.append(lb)
+    except Exception as e:
+        log.warning("Linha de balanços do bom dia: %s", e)
     messenger.send("\n".join(L))
 
 def job_heartbeat():
