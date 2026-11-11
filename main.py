@@ -1853,6 +1853,93 @@ def _diag_direcao():
     L.append("Casos se agrupam em poucos dias de mercado: a amostra efetiva é bem menor. Ação, sem opção e sem custos. Diferença de poucos pontos de 50% é ruído.")
     messenger.send("\n".join(L))
 
+def job_diag_setores():
+    try:
+        _diag_setores()
+    except Exception as e:
+        log.exception("diag_setores falhou")
+        messenger.send(f"Teste de setores falhou: {type(e).__name__}: {str(e)[:200]}")
+
+SETORES = {"Petróleo e combustíveis": ["PETR4", "PRIO3", "UGPA3", "CSAN3", "RAIZ4", "VBBR3", "BRAV3"],
+           "Mineração e siderurgia": ["VALE3", "CSNA3", "USIM5", "GGBR4", "GOAU4", "CMIN3", "BRAP4"],
+           "Bancos e finanças": ["ITUB4", "BBDC4", "BBAS3", "BPAC11", "ITSA4", "SANB11", "B3SA3"],
+           "Varejo e consumo": ["MGLU3", "LREN3", "ASAI3", "ABEV3", "PCAR3", "CRFB3", "ARZZ3", "AZZA3", "VIVA3", "NATU3"],
+           "Energia e saneamento": ["AXIA3", "CMIG4", "CPLE6", "SBSP3", "EQTL3", "TAEE11", "ENGI11", "ELET3", "ELET6"],
+           "Indústria e transporte": ["WEGE3", "EMBR3", "RAIL3", "SIMH3", "RENT3", "CCRO3", "ECOR3"],
+           "Papel e celulose": ["SUZB3", "KLBN11"]}
+
+def _diag_setores():
+    """Comando 'setores' (so leitura): 1 ano de candles diarios; o movimento do setor (sem o proprio ativo, descontado o BOVA11) nos ultimos 5/10/20 dias prevê a direcao do ativo? Mesmo criterio: +3% antes de -3% em ate 20 pregoes."""
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "1y", "1d")
+    bidx = {dia_de(b): k for k, b in enumerate(bova)}
+    sec_of = {t: s for s, ts in SETORES.items() for t in ts}
+    dados, erros = {}, 0
+    for t in config.UNIVERSE:
+        if t not in sec_of:
+            continue
+        try:
+            dados[t] = api.history(t, "1y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_setores %s: %s", t, e)
+    idx = {t: {dia_de(b): k for k, b in enumerate(dl)} for t, dl in dados.items()}
+    acc = {}
+    def add(g, dia, w3, w5, half):
+        a = acc.setdefault(g, dict(d=set(), n3=0, w3=0, n5=0, w5=0, h=[[0, 0], [0, 0]]))
+        if w3 is not None:
+            a["d"].add(dia); a["n3"] += 1; a["w3"] += w3; a["h"][half][0] += 1; a["h"][half][1] += w3
+        if w5 is not None:
+            a["n5"] += 1; a["w5"] += w5
+    for L in (5, 10, 20):
+        ret = {}
+        for t, dl in dados.items():
+            for d, k in idx[t].items():
+                if k >= L:
+                    ret[(t, d)] = dl[k]["close"] / dl[k - L]["close"] - 1
+        bret = {d: bova[k]["close"] / bova[k - L]["close"] - 1 for d, k in bidx.items() if k >= L}
+        por_dia = {}
+        for (t, d), v in ret.items():
+            por_dia.setdefault(d, {}).setdefault(sec_of[t], []).append((t, v))
+        val = {}
+        for d, secs in por_dia.items():
+            if d not in bret: continue
+            for sec, mem in secs.items():
+                for t, _ in mem:
+                    outros = [v for m, v in mem if m != t]
+                    if outros:
+                        val[(t, d)] = (sum(outros) / len(outros) - bret[d]) * 100
+        dias_v = {}
+        for (t, d), v in val.items():
+            dias_v.setdefault(d, []).append(v)
+        q = {d: (sorted(v)[int(len(v) * 0.2)], sorted(v)[min(len(v) - 1, int(len(v) * 0.8))]) for d, v in dias_v.items() if len(v) >= 10}
+        for (t, d), v in val.items():
+            if d not in q: continue
+            k = idx[t][d]; dl = dados[t]; n = len(dl)
+            if k < 60 or k >= n - 1: continue
+            half = 0 if k < n // 2 else 1
+            forte, fraco = v >= q[d][1], v <= q[d][0]
+            if not (forte or fraco): continue
+            for dr in ("long", "short"):
+                w3, w5 = _barreira(dl, k, dr, 0.03), _barreira(dl, k, dr, 0.05)
+                if forte:
+                    add((L, "Setor forte: call (a favor do setor)" if dr == "long" else "Setor forte: put (contra o setor)"), d, w3, w5, half)
+                if fraco:
+                    add((L, "Setor fraco: put (a favor do setor)" if dr == "short" else "Setor fraco: call (contra o setor)"), d, w3, w5, half)
+    nomes = ["Setor forte: call (a favor do setor)", "Setor fraco: put (a favor do setor)", "Setor forte: put (contra o setor)", "Setor fraco: call (contra o setor)"]
+    L_ = [f"Setores (último ano, {len(dados)} ativos mapeados em {len({sec_of[t] for t in dados})} setores): o setor (sem o próprio ativo, descontado o BOVA11) nos últimos 5, 10 ou 20 dias prevê o ativo? Chance de +3% a favor antes de −3% contra em até 20 pregões. Sem vantagem = 50%.", ""]
+    for L in (5, 10, 20):
+        L_.append(f"Setor medido em {L} dias (20% mais fortes e 20% mais fracos):")
+        for nm in nomes:
+            a = acc.get((L, nm))
+            if not a or not a["n3"]:
+                L_.append(f"  {nm}: sem casos"); continue
+            h = lambda x: f"{x[1] / x[0] * 100:.0f}%" if x[0] else "-"
+            L_.append(f"  {nm}: {a['n3']} casos em {len(a['d'])} dias · 3%: {a['w3'] / a['n3'] * 100:.0f}% · 5%: " + (f"{a['w5'] / a['n5'] * 100:.0f}%" if a["n5"] else "-") + f" · 1ª metade {h(a['h'][0])} · 2ª metade {h(a['h'][1])}")
+    L_.append("")
+    L_.append("Casos se agrupam em poucos dias de mercado. Ação, sem opção e sem custos. Diferença de poucos pontos de 50% é ruído; só vale o que se mantém acima de 55% nas duas metades.")
+    messenger.send("\n".join(L_))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1878,7 +1965,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2125,6 +2212,8 @@ def serve():
         s.add_job(_once_key("lista:2026-11-10", job_diag_lista), "date", run_date=now() + timedelta(seconds=120), id="lista_once")
     if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de direcao
         s.add_job(_once_key("direcao:2026-11-11", job_diag_direcao), "date", run_date=now() + timedelta(seconds=120), id="direcao_once")
+    if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de setores
+        s.add_job(_once_key("setores:2026-11-11", job_diag_setores), "date", run_date=now() + timedelta(seconds=150), id="setores_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
