@@ -1759,6 +1759,100 @@ def _diag_lista():
     cab.append("")
     messenger.send("\n".join(cab + L))
 
+def job_diag_direcao():
+    try:
+        _diag_direcao()
+    except Exception as e:
+        log.exception("diag_direcao falhou")
+        messenger.send(f"Teste de direção falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _barreira(daily, i, dr, pct):
+    """1 se o preco andou +pct a favor antes de -pct contra em ate 20 pregoes (mesmo dia nos dois = perda); 0 se perdeu; None se nenhum dos dois."""
+    c = daily[i]["close"]; up, dn = c * (1 + pct), c * (1 - pct)
+    for b in daily[i + 1:i + 21]:
+        if dr == "long":
+            if b["low"] <= dn: return 0
+            if b["high"] >= up: return 1
+        else:
+            if b["high"] >= up: return 0
+            if b["low"] <= dn: return 1
+    return None
+
+def _diag_direcao():
+    """Comando 'direcao' (so leitura): 1 ano de candles diarios nos ativos; probabilidade de andar +3% (ou +5%) a favor antes de -3% (ou -5%) contra em ate 20 pregoes, para varias leituras de direcao. Sem vantagem = 50%."""
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "1y", "1d")
+    bcl = [b["close"] for b in bova]; bidx = {dia_de(b): k for k, b in enumerate(bova)}
+    def breg(d):
+        k = bidx.get(d)
+        if k is None or k < 21: return None
+        s20 = sum(bcl[k - 19:k + 1]) / 20
+        dd = bcl[k] / max(b["high"] for b in bova[k - 19:k + 1]) - 1
+        return dict(acima=bcl[k] > s20, r1=(bcl[k] / bcl[k - 1] - 1) * 100, dd=dd * 100, r10=(bcl[k] / bcl[k - 10] - 1) * 100)
+    dados, erros = {}, 0
+    for t in config.UNIVERSE:
+        try:
+            dados[t] = api.history(t, "1y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_direcao %s: %s", t, e)
+    rs = {}
+    for t, dl in dados.items():
+        for i in range(10, len(dl)):
+            k = bidx.get(dia_de(dl[i]))
+            if k is not None and k >= 10:
+                rs[(t, dia_de(dl[i]))] = (dl[i]["close"] / dl[i - 10]["close"] - 1) * 100 - (bcl[k] / bcl[k - 10] - 1) * 100
+    por_dia = {}
+    for (t, d), v in rs.items():
+        por_dia.setdefault(d, []).append(v)
+    q = {d: (sorted(v)[int(len(v) * 0.2)], sorted(v)[min(len(v) - 1, int(len(v) * 0.8))]) for d, v in por_dia.items() if len(v) >= 10}
+    acc = {}
+    def add(g, dia, w3, w5, half):
+        a = acc.setdefault(g, dict(d=set(), n3=0, w3=0, n5=0, w5=0, h=[[0, 0], [0, 0]]))
+        if w3 is not None:
+            a["d"].add(dia); a["n3"] += 1; a["w3"] += w3; a["h"][half][0] += 1; a["h"][half][1] += w3
+        if w5 is not None:
+            a["n5"] += 1; a["w5"] += w5
+    for t, dl in dados.items():
+        n = len(dl)
+        for i in range(60, n - 1):
+            dia = dia_de(dl[i]); br = breg(dia)
+            if not br: continue
+            half = 0 if i < n // 2 else 1
+            c = dl[i]["close"]
+            mom5 = (c / dl[i - 5]["close"] - 1) * 100
+            h20 = max(b["high"] for b in dl[i - 20:i]); l20 = min(b["low"] for b in dl[i - 20:i])
+            for dr in ("long", "short"):
+                sg = 1 if dr == "long" else -1
+                w3, w5 = _barreira(dl, i, dr, 0.03), _barreira(dl, i, dr, 0.05)
+                mkt = br["acima"] == (dr == "long")
+                add("Todos os dias, call" if dr == "long" else "Todos os dias, put", dia, w3, w5, half)
+                romp = c > h20 if dr == "long" else c < l20
+                if romp: add("Rompimento de 20 dias", dia, w3, w5, half)
+                perto = (c >= 0.98 * h20) if dr == "long" else (c <= 1.02 * l20)
+                if perto and mom5 * sg >= 4:
+                    add("Perto do extremo de 20d + movimento de 4% em 5 dias a favor", dia, w3, w5, half)
+                    add("  … com BOVA11 a favor (acima/abaixo da média de 20d)" if mkt else "  … com BOVA11 contra", dia, w3, w5, half)
+                if (t, dia) in rs and dia in q:
+                    forte = rs[(t, dia)] >= q[dia][1] if dr == "long" else rs[(t, dia)] <= q[dia][0]
+                    if forte:
+                        add("Força relativa forte contra o BOVA11 (10 dias, 20% mais forte)", dia, w3, w5, half)
+                        if mkt: add("  … com BOVA11 a favor", dia, w3, w5, half)
+                if dr == "long" and br["dd"] <= -5 and br["r1"] >= 1:
+                    add("Virada de mercado: BOVA11 5% abaixo da máx de 20d e dia de +1% (call)", dia, w3, w5, half)
+    L = [f"Direção (último ano, {len(config.UNIVERSE) - erros} ativos): chance de andar +3% a favor antes de −3% contra em até 20 pregões (e com 5%). Sem vantagem = 50%. Só casos resolvidos.", ""]
+    ordem = ["Todos os dias, call", "Todos os dias, put", "Rompimento de 20 dias", "Perto do extremo de 20d + movimento de 4% em 5 dias a favor", "  … com BOVA11 a favor (acima/abaixo da média de 20d)", "  … com BOVA11 contra",
+             "Força relativa forte contra o BOVA11 (10 dias, 20% mais forte)", "  … com BOVA11 a favor", "Virada de mercado: BOVA11 5% abaixo da máx de 20d e dia de +1% (call)"]
+    for g in ordem:
+        a = acc.get(g)
+        if not a or not a["n3"]:
+            L.append(f"{g}: sem casos"); continue
+        h = lambda x: f"{x[1] / x[0] * 100:.0f}%" if x[0] else "-"
+        L.append(f"{g}: {a['n3']} casos em {len(a['d'])} dias · 3%: {a['w3'] / a['n3'] * 100:.0f}% · 5%: " + (f"{a['w5'] / a['n5'] * 100:.0f}%" if a["n5"] else "-") + f" · 1ª metade {h(a['h'][0])} · 2ª metade {h(a['h'][1])}")
+    L.append("")
+    L.append("Casos se agrupam em poucos dias de mercado: a amostra efetiva é bem menor. Ação, sem opção e sem custos. Diferença de poucos pontos de 50% é ruído.")
+    messenger.send("\n".join(L))
+
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
 
@@ -1784,7 +1878,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2029,6 +2123,8 @@ def serve():
         s.add_job(_once_key("exemplos2c:2026-11-10", job_diag_exemplos2), "date", run_date=now() + timedelta(seconds=480), id="exemplos2_once")
     if date(2026, 11, 10) <= now().date() <= date(2026, 11, 12):   # envio unico da lista do usuario
         s.add_job(_once_key("lista:2026-11-10", job_diag_lista), "date", run_date=now() + timedelta(seconds=120), id="lista_once")
+    if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de direcao
+        s.add_job(_once_key("direcao:2026-11-11", job_diag_direcao), "date", run_date=now() + timedelta(seconds=120), id="direcao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
