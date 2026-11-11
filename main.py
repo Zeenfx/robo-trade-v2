@@ -1947,11 +1947,11 @@ def job_diag_empilhar():
         log.exception("diag_empilhar falhou")
         messenger.send(f"Teste de filtros empilhados falhou: {type(e).__name__}: {str(e)[:200]}")
 
-def _diag_empilhar():
+def _diag_empilhar(rng="1y", por_ano=False):
     """Comando 'empilhar' (so leitura): empilha leituras de direcao (setor 10d, forca relativa 10d, BOVA11 a favor, perto do extremo + movimento de 5 dias) em 6 combinacoes fixas e mede +3% antes de -3% em 20 pregoes. Inclui a combinacao completa na direcao contraria como prova de sanidade."""
     api = Brapi()
     dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
-    bova = api.history("BOVA11", "1y", "1d")
+    bova = api.history("BOVA11", rng, "1d")
     bcl = [b["close"] for b in bova]; bidx = {dia_de(b): k for k, b in enumerate(bova)}
     sec_of = {t: s for s, ts in SETORES.items() for t in ts}
     dados, erros = {}, 0
@@ -1959,7 +1959,7 @@ def _diag_empilhar():
         if t not in sec_of:
             continue
         try:
-            dados[t] = api.history(t, "1y", "1d")
+            dados[t] = api.history(t, rng, "1d")
         except Exception as e:
             erros += 1; log.warning("diag_empilhar %s: %s", t, e)
     idx = {t: {dia_de(b): k for k, b in enumerate(dl)} for t, dl in dados.items()}
@@ -1987,8 +1987,11 @@ def _diag_empilhar():
             dd.setdefault(d, []).append(v)
         return {d: (sorted(v)[int(len(v) * 0.2)], sorted(v)[min(len(v) - 1, int(len(v) * 0.8))]) for d, v in dd.items() if len(v) >= 10}
     qs, qr = quant(setor), quant(rs)
-    acc = {}
+    acc, yacc = {}, {}
     def add(g, dia, w3, w5, half):
+        y = yacc.setdefault((g, dia.year), [0, 0])
+        if w3 is not None:
+            y[0] += 1; y[1] += w3
         a = acc.setdefault(g, dict(d=set(), n3=0, w3=0, n5=0, w5=0, h=[[0, 0], [0, 0]]))
         if w3 is not None:
             a["d"].add(dia); a["n3"] += 1; a["w3"] += w3; a["h"][half][0] += 1; a["h"][half][1] += w3
@@ -1996,7 +1999,10 @@ def _diag_empilhar():
             a["n5"] += 1; a["w5"] += w5
     for t, dl in dados.items():
         n = len(dl)
+        salto = [0] + [1 if abs(dl[i]["close"] / dl[i - 1]["close"] - 1) > 0.25 else 0 for i in range(1, n)]
         for d, k in idx[t].items():
+            if por_ano and sum(salto[max(0, k - 20):k + 22]) > 0:
+                continue      # protecao contra desdobramento/grupamento nao ajustado na serie
             if k < 60 or k >= n - 1 or d not in bidx or bidx[d] < 21 or (t, d) not in setor or d not in qs or d not in qr:
                 continue
             kb = bidx[d]
@@ -2023,6 +2029,18 @@ def _diag_empilhar():
                 B2 = rs[(t, d)] <= qr[d][0] if lg else rs[(t, d)] >= qr[d][1]
                 C2 = acima != lg
                 if A2 and B2 and C2: add("Sanidade: combinação 5 invertida (operando contra)", d, w3, w5, half)
+    if por_ano:
+        anos = sorted({a_ for (_, a_) in yacc})
+        L = [f"Validação fora da amostra ({rng} de candles diários, {len(dados)} ativos mapeados). MESMOS critérios do teste anterior, nada ajustado. Chance de +3% a favor antes de −3% contra em até 20 pregões, por ano. Sem vantagem = 50%. Casos com salto diário acima de 25% na janela foram excluídos (possível desdobramento sem ajuste).", ""]
+        for g in ["Todos os dias (referência, call)", "Todos os dias (referência, put)", "2. Setor + força relativa a favor", "5. Setor + força relativa + BOVA11 a favor", "6. Os três + perto do extremo com movimento de 5 dias", "Sanidade: combinação 5 invertida (operando contra)"]:
+            tot = [sum(yacc.get((g, a_), [0, 0])[0] for a_ in anos), sum(yacc.get((g, a_), [0, 0])[1] for a_ in anos)]
+            if not tot[0]:
+                L.append(f"{g}: sem casos"); continue
+            L.append(f"{g}: total {tot[1] / tot[0] * 100:.0f}% ({tot[0]}) · " + " · ".join(f"{a_} {yacc[(g, a_)][1] / yacc[(g, a_)][0] * 100:.0f}% ({yacc[(g, a_)][0]})" for a_ in anos if yacc.get((g, a_), [0, 0])[0] >= 20))
+        L.append("")
+        L.append("Anos com menos de 20 casos não aparecem. Entre parênteses, número de casos (do mesmo dia andam juntos). Só vale se a combinação 5 e 6 ficarem acima de 55% e a invertida abaixo de 50% em cada ano.")
+        messenger.send("\n".join(L))
+        return
     L = [f"Filtros empilhados (último ano, {len(dados)} ativos mapeados). Chance de +3% a favor antes de −3% contra em até 20 pregões (e 5%). Sem vantagem = 50%. 6 combinações fixas definidas antes do teste.", ""]
     ordem = ["Todos os dias (referência, call)", "Todos os dias (referência, put)", "1. Setor a favor", "2. Setor + força relativa a favor", "3. Setor + BOVA11 a favor", "4. Força relativa + BOVA11 a favor",
              "5. Setor + força relativa + BOVA11 a favor", "6. Os três + perto do extremo com movimento de 5 dias", "Sanidade: combinação 5 invertida (operando contra)"]
@@ -2035,6 +2053,13 @@ def _diag_empilhar():
     L.append("")
     L.append("Quanto mais filtros, menos casos e mais risco de ruído parecer vantagem. Só vale o que passa de 55% nas duas metades e com muitos dias distintos. Ação, sem opção e sem custos.")
     messenger.send("\n".join(L))
+
+def job_diag_validar():
+    try:
+        _diag_empilhar("5y", True)
+    except Exception as e:
+        log.exception("diag_validar falhou")
+        messenger.send(f"Validação fora da amostra falhou: {type(e).__name__}: {str(e)[:200]}")
 
 def fmt_(x, n=2):
     return messenger.fmt(x, n)
@@ -2061,7 +2086,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2312,6 +2337,8 @@ def serve():
         s.add_job(_once_key("setores:2026-11-11", job_diag_setores), "date", run_date=now() + timedelta(seconds=150), id="setores_once")
     if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico do teste de filtros empilhados
         s.add_job(_once_key("empilhar:2026-11-11", job_diag_empilhar), "date", run_date=now() + timedelta(seconds=170), id="empilhar_once")
+    if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico da validacao fora da amostra
+        s.add_job(_once_key("validar:2026-11-11", job_diag_validar), "date", run_date=now() + timedelta(seconds=150), id="validar_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
