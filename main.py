@@ -2107,7 +2107,7 @@ def job_diag_toque():
 
 
 def _diag_toque():
-    """Comando 'toque' (so leitura): para cada alerta enviado, a opcao (preco estimado por Black-Scholes) chegou a +20/30/50/100% sobre o preco do alerta em algum momento dos 10 pregoes seguintes? Usa a maxima/minima do dia da acao a favor. Estimativa otimista (sem spread)."""
+    """Comando 'toque' (so leitura): para cada alerta enviado, o caminho da opcao (preco estimado por Black-Scholes, IV do alerta) ate hoje: dia e valor do pico, pior queda antes do pico e valor hoje. Usa maxima/minima diaria da acao (otimista: pico exige vender na hora certa)."""
     from messenger import fmt
     import json as _j
     from datetime import datetime as _dt
@@ -2122,45 +2122,42 @@ def _diag_toque():
         try:
             d0 = _dt.strptime(r["date"], "%Y-%m-%d").date()
             daily = api.history(r["ticker"], "3mo", "1d")
-            bars = [b for b in daily if _dt.fromtimestamp(b["date"], tz).date() > d0][:10]
-            if len(bars) < 5: continue
+            bars = [(_dt.fromtimestamp(b["date"], tz).date(), b) for b in daily]
+            bars = [(d, b) for d, b in bars if d > d0][:15]
+            if len(bars) < 1: continue
             call = sig["direction"] == "long"
             pr = sig["price"]
-            if any(abs(b["close"] / pr - 1) > 0.4 for b in bars): continue
-            iv = positions.implied_vol(call, o["ask"], o.get("spot_ref") or pr, o["strike"], max((_dt.strptime(o["expiration"], "%Y-%m-%d").date() - d0).days, 1) / 365.0)
+            if any(abs(b["close"] / pr - 1) > 0.4 for d, b in bars): continue
+            exp = _dt.strptime(o["expiration"], "%Y-%m-%d").date()
+            iv = positions.implied_vol(call, o["ask"], o.get("spot_ref") or pr, o["strike"], max((exp - d0).days, 1) / 365.0)
             q = dict(direction=sig["direction"], strike=o["strike"], expiration=o["expiration"], iv=iv)
             e0 = positions.est_option(q, pr, d0)
             if not e0 or e0 <= 0: continue
-            best, dia, pior = -1e9, None, 1e9
-            for k, b in enumerate(bars, 1):
-                dd = positions.add_pregoes(d0, k)
-                S = b["high"] if call else b["low"]
-                Sa = b["low"] if call else b["high"]
-                v = positions.est_option(q, S, dd) / e0 - 1
-                a = positions.est_option(q, Sa, dd) / e0 - 1
-                pior = min(pior, a)
-                if v > best: best, dia = v, k
-            res.append((r["ticker"], r["date"][5:], r["direction"], best * 100, dia, pior * 100, e0))
+            pico, dpico, kp, piorantes, piorgeral = -1e9, None, 0, 0.0, 0.0
+            for k, (dd, b) in enumerate(bars, 1):
+                fav = b["high"] if call else b["low"]; adv = b["low"] if call else b["high"]
+                vf = positions.est_option(q, fav, dd) / e0 - 1
+                va = positions.est_option(q, adv, dd) / e0 - 1
+                piorgeral = min(piorgeral, va)
+                if vf > pico:
+                    pico, dpico, kp, piorantes = vf, dd, k, piorgeral
+            hoje = positions.est_option(q, bars[-1][1]["close"], bars[-1][0]) / e0 - 1
+            res.append(dict(t=r["ticker"], d=r["date"], di=r["direction"], sym=o.get("symbol", ""), pico=pico * 100, dpico=dpico, kp=kp, pa=piorantes * 100, hoje=hoje * 100, n=len(bars)))
         except Exception as e:
             log.warning("toque %s: %s", r["ticker"], e)
     if not res:
         messenger.send("Toque: sem dados."); return
     n = len(res)
-    L = ["A OPÇÃO CHEGOU A DAR LUCRO DEPOIS DO ALERTA? (10 pregões, estimativa otimista)", f"{n} alertas", ""]
+    L = ["PICO DA OPÇÃO DEPOIS DE CADA ALERTA (estimado, ate 15 pregões ou hoje)", f"{n} alertas", ""]
     for X in (20, 30, 50, 100):
-        h = [x for x in res if x[3] >= X]
-        md = sorted(x[4] for x in h)[len(h) // 2] if h else 0
-        L.append(f"Chegou a +{X}%: {len(h)} de {n} ({fmt(100 * len(h) / n, 0)}%) · mediana {md} pregões")
+        h = [x for x in res if x["pico"] >= X]
+        L.append(f"Pico de +{X}% ou mais: {len(h)} de {n} ({fmt(100 * len(h) / n, 0)}%)")
     L.append("")
-    for d, nm in (("long", "CALLS"), ("short", "PUTS")):
-        g = [x for x in res if x[2] == d]
-        if g:
-            L.append(f"{nm}: {len(g)} alertas · +30%: {sum(1 for x in g if x[3] >= 30)} · +50%: {sum(1 for x in g if x[3] >= 50)}")
-    L += ["", "Os que NÃO chegaram a +20%:"]
     for x in res:
-        if x[3] < 20:
-            L.append(f"{'▲' if x[2] == 'long' else '▼'} {x[0]} {x[1][3:]}/{x[1][:2]} · máximo +{fmt(max(x[3], 0), 0)}% · pior {fmt(x[5], 0)}%")
-    L += ["", "Atenção: usa a máxima do dia, que você só captura se vender na hora certa. Pior = queda máxima da opção no período."]
+        sg = lambda v: ("+" if v >= 0 else "−") + fmt(abs(v), 0) + "%"
+        cls = "JANELA" if x["pico"] >= 20 else ("fraco" if x["pico"] >= 5 else "NÃO VALIA")
+        L.append(f"{'▲' if x['di'] == 'long' else '▼'} {x['sym'] or x['t']} {x['d'][8:10]}/{x['d'][5:7]} · pico {sg(x['pico'])} em {x['dpico'].strftime('%d/%m')} ({x['kp']}º pregão) · antes dele caiu até {sg(x['pa'])} · hoje {sg(x['hoje'])} · {cls}")
+    L += ["", "JANELA = pico de +20% ou mais; NÃO VALIA = nunca passou de +5%. Pico usa a máxima do dia: é o teto, não o que se captura de fato."]
     txt = "\n".join(L)
     for i in range(0, len(txt), 3800):
         messenger.send(txt[i:i + 3800])
