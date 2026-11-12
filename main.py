@@ -1923,6 +1923,57 @@ def _diag_auditoria():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_excursao():
+    try:
+        _diag_excursao()
+    except Exception as e:
+        log.exception("diag_excursao falhou")
+        messenger.send(f"Teste de excursão falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_excursao():
+    from messenger import fmt
+    """Comando 'excursao' (so leitura): para cada alerta enviado, ate onde a acao andou a favor/contra em 10 pregoes. Quantos teriam lucro se saisse em +1%, +1,5%, +2%, +3% antes de -1,5% (e simetrico)."""
+    import json as _j
+    from datetime import datetime as _dt
+    api = Brapi()
+    with database.conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+    rows = [r for r in rows if not _j.loads(r["payload"]).get("bloq_mercado")]
+    res = []
+    for r in rows:
+        p = _j.loads(r["payload"]); sig = p.get("signal")
+        if not sig: continue
+        try:
+            daily = api.history(r["ticker"], "3mo", "1d")
+        except Exception:
+            continue
+        bars = [b for b in daily if _dt.fromtimestamp(b["date"], positions.config_tz() if hasattr(positions, "config_tz") else None).date().isoformat() > r["date"]][:10]
+        if len(bars) < 3: continue
+        short = r["direction"] == "short"; pr = sig["price"]
+        fav = [((pr / b["low"] - 1) if short else (b["high"] / pr - 1)) * 100 for b in bars]
+        adv = [((b["high"] / pr - 1) if short else (1 - b["low"] / pr)) * 100 for b in bars]
+        res.append((r["ticker"], r["date"][5:], r["direction"], max(fav), max(adv), fav, adv))
+    if not res:
+        messenger.send("Excursão: sem dados."); return
+    L = ["EXCURSÃO DOS ALERTAS (10 pregões, preço da ação)", f"{len(res)} alertas com dados", ""]
+    for t, d, di, mf, ma, _, _ in res:
+        L.append(f"{'▲' if di == 'long' else '▼'} {t} {d[3:]}/{d[:2]} · máx a favor +{fmt(mf, 1)}% · máx contra −{fmt(ma, 1)}%")
+    L += ["", "Se saísse no lucro X antes do contra Y (dia a dia; mesmo dia = perda):"]
+    for X, Y in ((1, 1), (1.5, 1.5), (2, 2), (3, 2), (3, 3), (5, 3)):
+        w = 0
+        for _, _, _, _, _, fav, adv in res:
+            for f, a in zip(fav, adv):
+                if a >= Y: break
+                if f >= X: w += 1; break
+        L.append(f"+{X}% antes de −{Y}%: {w} de {len(res)} ({fmt(100 * w / len(res), 0)}%)")
+    L += ["", "Nota: acaso puro daria Y/(X+Y): 50% em 1/1, 40% em 3/2."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2156,7 +2207,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2418,6 +2469,8 @@ def serve():
         s.add_job(_once_key("validar:2026-11-11", job_diag_validar), "date", run_date=now() + timedelta(seconds=150), id="validar_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da auditoria
         s.add_job(_once_key("auditoria:2026-11-12", job_diag_auditoria), "date", run_date=now() + timedelta(seconds=120), id="auditoria_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da excursao
+        s.add_job(_once_key("excursao:2026-11-12", job_diag_excursao), "date", run_date=now() + timedelta(seconds=150), id="excursao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
