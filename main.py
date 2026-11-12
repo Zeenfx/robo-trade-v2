@@ -1974,6 +1974,70 @@ def _diag_excursao():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_atraso():
+    try:
+        _diag_atraso()
+    except Exception as e:
+        log.exception("diag_atraso falhou")
+        messenger.send(f"Teste de atraso falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_atraso():
+    """Comando 'atraso' (so leitura): quanto a acao ja tinha andado (em favor do alerta) desde o fechamento anterior quando o alerta saiu, e o que aconteceu depois. Cedo <1%, medio 1-3%, tarde >3%."""
+    from messenger import fmt
+    import json as _j
+    from datetime import datetime as _dt
+    api = Brapi(); tz = positions.config_tz()
+    with database.conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+    rows = [r for r in rows if not _j.loads(r["payload"]).get("bloq_mercado")]
+    res = []
+    for r in rows:
+        sig = _j.loads(r["payload"]).get("signal")
+        if not sig: continue
+        try:
+            daily = api.history(r["ticker"], "3mo", "1d")
+        except Exception:
+            continue
+        ds = [(_dt.fromtimestamp(b["date"], tz).date().isoformat(), b) for b in daily]
+        ant = [b for d, b in ds if d < r["date"]]
+        dia = [b for d, b in ds if d == r["date"]]
+        dep = [b for d, b in ds if d > r["date"]][:10]
+        if not ant or len(dep) < 5: continue
+        short = r["direction"] == "short"; pr = sig["price"]; pc = ant[-1]["close"]
+        sg = -1 if short else 1
+        ja = (pr / pc - 1) * 100 * sg
+        # excluir saltos de serie (desdobramento/dado ruim)
+        if abs(pr / pc - 1) > 0.25 or any(abs(b["close"] / pr - 1) > 0.4 for b in dep): continue
+        r5 = (dep[4]["close"] / pr - 1) * 100 * sg
+        r10 = (dep[-1]["close"] / pr - 1) * 100 * sg
+        r0 = ((dia[0]["close"] / pr - 1) * 100 * sg) if dia else None
+        res.append((r["ticker"], r["date"][5:], r["direction"], ja, r0, r5, r10))
+    if not res:
+        messenger.send("Atraso: sem dados."); return
+    L = ["ALERTA CEDO OU TARDE? (preço da ação, a favor do alerta)", f"{len(res)} alertas com dados", ""]
+    for nome, f in (("Cedo (ja andou menos de 1%)", lambda x: x < 1), ("Médio (1 a 3%)", lambda x: 1 <= x < 3), ("Tarde (mais de 3%)", lambda x: x >= 3)):
+        g = [x for x in res if f(x[3])]
+        if not g:
+            L.append(f"{nome}: 0 alertas"); continue
+        m5 = sum(x[5] for x in g) / len(g); m10 = sum(x[6] for x in g) / len(g)
+        p5 = sum(1 for x in g if x[5] > 0)
+        z = [x[4] for x in g if x[4] is not None]
+        L.append(f"{nome}: {len(g)} alertas")
+        L.append(f"  retorno médio em 5 pregões: {'+' if m5 >= 0 else '−'}{fmt(abs(m5), 1)}% · positivos {p5}/{len(g)}")
+        L.append(f"  retorno médio em 10 pregões: {'+' if m10 >= 0 else '−'}{fmt(abs(m10), 1)}%")
+        if z:
+            mz = sum(z) / len(z)
+            L.append(f"  até o fechamento do dia do alerta: {'+' if mz >= 0 else '−'}{fmt(abs(mz), 1)}%")
+    L.append("")
+    for x in sorted(res, key=lambda x: x[3]):
+        L.append(f"{'▲' if x[2] == 'long' else '▼'} {x[0]} {x[1][3:]}/{x[1][:2]} · já andou {'+' if x[3] >= 0 else '−'}{fmt(abs(x[3]), 1)}% · depois 5d {'+' if x[5] >= 0 else '−'}{fmt(abs(x[5]), 1)}%")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2207,7 +2271,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2471,6 +2535,8 @@ def serve():
         s.add_job(_once_key("auditoria:2026-11-12", job_diag_auditoria), "date", run_date=now() + timedelta(seconds=120), id="auditoria_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da excursao
         s.add_job(_once_key("excursao:2026-11-12", job_diag_excursao), "date", run_date=now() + timedelta(seconds=150), id="excursao_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de atraso
+        s.add_job(_once_key("atraso:2026-11-12", job_diag_atraso), "date", run_date=now() + timedelta(seconds=150), id="atraso_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
