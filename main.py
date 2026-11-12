@@ -1853,6 +1853,76 @@ def _diag_direcao():
     L.append("Casos se agrupam em poucos dias de mercado: a amostra efetiva é bem menor. Ação, sem opção e sem custos. Diferença de poucos pontos de 50% é ruído.")
     messenger.send("\n".join(L))
 
+
+def job_diag_auditoria():
+    try:
+        _diag_auditoria()
+    except Exception as e:
+        log.exception("diag_auditoria falhou")
+        messenger.send(f"Auditoria falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_auditoria():
+    from messenger import fmt
+    """Comando 'auditoria' (so leitura): resumo real do robo - operacoes registradas, alertas enviados/bloqueados e placar dos resolvidos."""
+    import json as _j
+    L = ["AUDITORIA DO ROBÔ (dados reais)", ""]
+    with database.conn() as c:
+        try:
+            pos = [dict(r) for r in c.execute("SELECT * FROM positions ORDER BY id").fetchall()]
+        except Exception:
+            pos = []
+        al = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+        try:
+            out = [dict(r) for r in c.execute("SELECT * FROM outcomes ORDER BY date").fetchall()]
+        except Exception:
+            out = []
+    # 1) operacoes
+    L.append("1) SUAS OPERAÇÕES")
+    tot = 0.0; ntot = 0
+    for p in pos:
+        if p.get("status") == "open":
+            L.append(f"• {p['symbol']} ABERTA ({p.get('qty')} a {fmt(p.get('entry') or 0, 2)})")
+            continue
+        r = p.get("realized") or 0.0
+        tot += r; ntot += 1
+        L.append(f"• {p['symbol']} ({p.get('origem') or 'robo'}) {str(p.get('opened'))[5:10]}: {'+' if r >= 0 else '−'}R$ {fmt(abs(r), 0)}")
+    L.append(f"Total realizado: {'+' if tot >= 0 else '−'}R$ {fmt(abs(tot), 0)} em {ntot} operações")
+    # 2) alertas
+    bq = [a for a in al if _j.loads(a["payload"]).get("bloq_mercado")]
+    env = [a for a in al if a not in bq]
+    ns = [a for a in env if _j.loads(a["payload"]).get("enviado") is False]
+    L += ["", "2) ALERTAS", f"Total gerados: {len(al)} · enviados: {len(env)} · bloqueados pelo BOVA: {len(bq)}"]
+    for d, nm in (("long", "CALL"), ("short", "PUT")):
+        L.append(f"{nm}: {sum(1 for a in env if a['direction'] == d)} enviados")
+    # 3) placar
+    bqk = {(a["date"], a["ticker"], a["direction"]) for a in bq}
+    o = [r for r in out if (r["date"], r["ticker"], r["direction"]) not in bqk]
+    L += ["", "3) PLACAR DOS ALERTAS RESOLVIDOS (ação, sem custo)"]
+    for d, nm in (("long", "CALL"), ("short", "PUT"), (None, "TOTAL")):
+        x = [r for r in o if d is None or r["direction"] == d]
+        if not x: continue
+        a = sum(1 for r in x if r["result"] == "alvo"); sd = sum(1 for r in x if r["result"] == "saida"); pz = sum(1 for r in x if r["result"] == "prazo")
+        fav = sum(1 for r in x if r["move_pct"] > 0)
+        med = sum(r["move_pct"] for r in x) / len(x)
+        L.append(f"{nm}: {len(x)} · alvo {a} · saída {sd} · prazo {pz} · a favor {fav}/{len(x)} · movimento médio {'+' if med >= 0 else '−'}{fmt(abs(med), 1)}%")
+    # 4) opcao estimada se seguisse todos
+    try:
+        import outcomes
+        paym = {(a["date"], a["ticker"], a["direction"]): _j.loads(a["payload"]) for a in al}
+        s = 0.0; n = 0
+        for r in o:
+            q = outcomes._sim_opcao(paym.get((r["date"], r["ticker"], r["direction"])) or {}, r)
+            if q: s += q[1]; n += 1
+        L += ["", f"4) Seguir todos os {n} alertas resolvidos com 100 opções: {'+' if s >= 0 else '−'}R$ {fmt(abs(s), 0)} (estimado, otimista: sem spread de ~10%)"]
+    except Exception as e:
+        L.append(f"4) simulação indisponível: {type(e).__name__}")
+    L += ["", "Leitura: amostra pequena; testes de 5 anos não acharam vantagem de direção nos filtros testados."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2086,7 +2156,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2346,6 +2416,8 @@ def serve():
         s.add_job(_once_key("empilhar:2026-11-11", job_diag_empilhar), "date", run_date=now() + timedelta(seconds=170), id="empilhar_once")
     if date(2026, 11, 11) <= now().date() <= date(2026, 11, 13):   # envio unico da validacao fora da amostra
         s.add_job(_once_key("validar:2026-11-11", job_diag_validar), "date", run_date=now() + timedelta(seconds=150), id="validar_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da auditoria
+        s.add_job(_once_key("auditoria:2026-11-12", job_diag_auditoria), "date", run_date=now() + timedelta(seconds=120), id="auditoria_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
