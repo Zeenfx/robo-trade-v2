@@ -2038,6 +2038,65 @@ def _diag_atraso():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_movido():
+    try:
+        _diag_movido()
+    except Exception as e:
+        log.exception("diag_movido falhou")
+        messenger.send(f"Teste do movimento falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_movido():
+    """Comando 'movido' (so leitura): 5 anos de candles diarios nos ativos; dado que a acao ja andou X% no dia (fechamento vs fechamento anterior), o que acontece nos proximos 5 pregoes? Divide por metade do periodo para checar estabilidade."""
+    from messenger import fmt
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    faixas = [("queda de 5% ou mais", -99, -5), ("queda de 3 a 5%", -5, -3), ("queda de 1 a 3%", -3, -1), ("quase parado (-1 a +1%)", -1, 1), ("alta de 1 a 3%", 1, 3), ("alta de 3 a 5%", 3, 5), ("alta de 5% ou mais", 5, 99)]
+    acc = {f[0]: [[], []] for f in faixas}   # [primeira metade, segunda metade] de retornos em 5 pregoes
+    base = [[], []]; erros = 0; n_tick = 0
+    for t in config.UNIVERSE:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            erros += 1; log.warning("diag_movido %s: %s", t, e); continue
+        if len(dl) < 300: continue
+        n_tick += 1
+        cl = [b["close"] for b in dl]
+        meio = len(dl) // 2
+        for i in range(1, len(dl) - 5):
+            if cl[i - 1] <= 0: continue
+            janela = cl[i - 1:i + 6]
+            if any(abs(janela[k + 1] / janela[k] - 1) > 0.25 for k in range(len(janela) - 1)):
+                continue   # salto de serie (desdobramento/dado ruim)
+            m = (cl[i] / cl[i - 1] - 1) * 100
+            r5 = (cl[i + 5] / cl[i] - 1) * 100
+            h = 0 if i < meio else 1
+            base[h].append(r5)
+            for nome, lo, hi in faixas:
+                if lo <= m < hi:
+                    acc[nome][h].append(r5); break
+    if not n_tick:
+        messenger.send("Movimento: sem dados."); return
+    med = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 2) + "%"
+    L = ["JÁ ANDOU NO DIA, E DEPOIS? (5 anos, " + str(n_tick) + " ativos, retorno em 5 pregões)", ""]
+    allb = base[0] + base[1]
+    L.append(f"Qualquer dia: média {sg(med(allb))} · sobe em {fmt(100 * sum(1 for x in allb if x > 0) / len(allb), 0)}% ({len(allb)} casos)")
+    L.append("")
+    for nome, lo, hi in faixas:
+        a, b = acc[nome]; t = a + b
+        if len(t) < 30:
+            L.append(f"{nome}: poucos casos"); continue
+        up = 100 * sum(1 for x in t if x > 0) / len(t)
+        L.append(f"{nome}: {len(t)} casos · média {sg(med(t))} · sobe em {fmt(up, 0)}%")
+        L.append(f"   1ª metade {sg(med(a))} ({len(a)}) · 2ª metade {sg(med(b))} ({len(b)})")
+    L += ["", "Leitura: média acima do 'qualquer dia' = continua; abaixo = reverte. Só vale se as duas metades concordarem."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2271,7 +2330,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2537,6 +2596,8 @@ def serve():
         s.add_job(_once_key("excursao:2026-11-12", job_diag_excursao), "date", run_date=now() + timedelta(seconds=150), id="excursao_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de atraso
         s.add_job(_once_key("atraso:2026-11-12", job_diag_atraso), "date", run_date=now() + timedelta(seconds=150), id="atraso_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do movimento
+        s.add_job(_once_key("movido:2026-11-12", job_diag_movido), "date", run_date=now() + timedelta(seconds=150), id="movido_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
