@@ -2097,6 +2097,75 @@ def _diag_movido():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_toque():
+    try:
+        _diag_toque()
+    except Exception as e:
+        log.exception("diag_toque falhou")
+        messenger.send(f"Teste de toque falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_toque():
+    """Comando 'toque' (so leitura): para cada alerta enviado, a opcao (preco estimado por Black-Scholes) chegou a +20/30/50/100% sobre o preco do alerta em algum momento dos 10 pregoes seguintes? Usa a maxima/minima do dia da acao a favor. Estimativa otimista (sem spread)."""
+    from messenger import fmt
+    import json as _j
+    from datetime import datetime as _dt
+    api = Brapi(); tz = positions.config_tz()
+    with database.conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+    rows = [r for r in rows if not _j.loads(r["payload"]).get("bloq_mercado")]
+    res = []
+    for r in rows:
+        p = _j.loads(r["payload"]); o, sig = p.get("option"), p.get("signal")
+        if not o or not sig: continue
+        try:
+            d0 = _dt.strptime(r["date"], "%Y-%m-%d").date()
+            daily = api.history(r["ticker"], "3mo", "1d")
+            bars = [b for b in daily if _dt.fromtimestamp(b["date"], tz).date() > d0][:10]
+            if len(bars) < 5: continue
+            call = sig["direction"] == "long"
+            pr = sig["price"]
+            if any(abs(b["close"] / pr - 1) > 0.4 for b in bars): continue
+            iv = positions.implied_vol(call, o["ask"], o.get("spot_ref") or pr, o["strike"], max((_dt.strptime(o["expiration"], "%Y-%m-%d").date() - d0).days, 1) / 365.0)
+            q = dict(direction=sig["direction"], strike=o["strike"], expiration=o["expiration"], iv=iv)
+            e0 = positions.est_option(q, pr, d0)
+            if not e0 or e0 <= 0: continue
+            best, dia, pior = -1e9, None, 1e9
+            for k, b in enumerate(bars, 1):
+                dd = positions.add_pregoes(d0, k)
+                S = b["high"] if call else b["low"]
+                Sa = b["low"] if call else b["high"]
+                v = positions.est_option(q, S, dd) / e0 - 1
+                a = positions.est_option(q, Sa, dd) / e0 - 1
+                pior = min(pior, a)
+                if v > best: best, dia = v, k
+            res.append((r["ticker"], r["date"][5:], r["direction"], best * 100, dia, pior * 100, e0))
+        except Exception as e:
+            log.warning("toque %s: %s", r["ticker"], e)
+    if not res:
+        messenger.send("Toque: sem dados."); return
+    n = len(res)
+    L = ["A OPÇÃO CHEGOU A DAR LUCRO DEPOIS DO ALERTA? (10 pregões, estimativa otimista)", f"{n} alertas", ""]
+    for X in (20, 30, 50, 100):
+        h = [x for x in res if x[3] >= X]
+        md = sorted(x[4] for x in h)[len(h) // 2] if h else 0
+        L.append(f"Chegou a +{X}%: {len(h)} de {n} ({fmt(100 * len(h) / n, 0)}%) · mediana {md} pregões")
+    L.append("")
+    for d, nm in (("long", "CALLS"), ("short", "PUTS")):
+        g = [x for x in res if x[2] == d]
+        if g:
+            L.append(f"{nm}: {len(g)} alertas · +30%: {sum(1 for x in g if x[3] >= 30)} · +50%: {sum(1 for x in g if x[3] >= 50)}")
+    L += ["", "Os que NÃO chegaram a +20%:"]
+    for x in res:
+        if x[3] < 20:
+            L.append(f"{'▲' if x[2] == 'long' else '▼'} {x[0]} {x[1][3:]}/{x[1][:2]} · máximo +{fmt(max(x[3], 0), 0)}% · pior {fmt(x[5], 0)}%")
+    L += ["", "Atenção: usa a máxima do dia, que você só captura se vender na hora certa. Pior = queda máxima da opção no período."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2330,7 +2399,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2598,6 +2667,8 @@ def serve():
         s.add_job(_once_key("atraso:2026-11-12", job_diag_atraso), "date", run_date=now() + timedelta(seconds=150), id="atraso_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do movimento
         s.add_job(_once_key("movido:2026-11-12", job_diag_movido), "date", run_date=now() + timedelta(seconds=150), id="movido_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de toque
+        s.add_job(_once_key("toque:2026-11-12", job_diag_toque), "date", run_date=now() + timedelta(seconds=150), id="toque_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
