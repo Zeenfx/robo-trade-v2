@@ -2454,6 +2454,124 @@ def _diag_regime_vivo():
         messenger.send(txt[i:i + 3800])
 
 
+
+def _supertrend_dir(dl, per=10, mult=3.0):
+    """Direcao (1 alta / -1 baixa) da linha de tendencia por ATR (tipo SuperTrend)."""
+    n = len(dl)
+    tr = [dl[0]["high"] - dl[0]["low"]] + [max(dl[i]["high"] - dl[i]["low"], abs(dl[i]["high"] - dl[i - 1]["close"]), abs(dl[i]["low"] - dl[i - 1]["close"])) for i in range(1, n)]
+    atr = [0.0] * n
+    for i in range(n):
+        atr[i] = sum(tr[:i + 1]) / (i + 1) if i < per else (atr[i - 1] * (per - 1) + tr[i]) / per
+    d = [1] * n; up = [0.0] * n; lo = [0.0] * n
+    for i in range(n):
+        m = (dl[i]["high"] + dl[i]["low"]) / 2
+        bu, bl = m + mult * atr[i], m - mult * atr[i]
+        if i == 0:
+            up[i], lo[i] = bu, bl; continue
+        up[i] = bu if (bu < up[i - 1] or dl[i - 1]["close"] > up[i - 1]) else up[i - 1]
+        lo[i] = bl if (bl > lo[i - 1] or dl[i - 1]["close"] < lo[i - 1]) else lo[i - 1]
+        if d[i - 1] == -1 and dl[i]["close"] > up[i - 1]: d[i] = 1
+        elif d[i - 1] == 1 and dl[i]["close"] < lo[i - 1]: d[i] = -1
+        else: d[i] = d[i - 1]
+    return d
+
+
+def _macd_hist(cl, a=12, b=26, c=9):
+    def ema(v, p):
+        k = 2 / (p + 1); o = [v[0]]
+        for x in v[1:]: o.append(x * k + o[-1] * (1 - k))
+        return o
+    m = [x - y for x, y in zip(ema(cl, a), ema(cl, b))]
+    sg = ema(m, c)
+    return [x - y for x, y in zip(m, sg)]
+
+
+def job_diag_macd():
+    try:
+        _diag_macd()
+    except Exception as e:
+        log.exception("diag_macd falhou")
+        messenger.send(f"Teste do MACD falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_macd():
+    """Comando 'macd' (so leitura): regra do usuario em candles diarios, 5 anos. Entrada: a linha de tendencia (ATR 10 x 3) vira E o histograma do MACD (12,26,9) cruza o zero no mesmo sentido, com ate 2 candles de diferenca. Saida alternativa: quando o histograma comeca a encolher. Compara com so a virada da linha (sem MACD) e com qualquer dia."""
+    from messenger import fmt
+    api = Brapi()
+    ativos = list(config.UNIVERSE) + ["BOVA11"]
+    G = {}
+    def add(g, dr, h, r5, r10, br, rs, dias):
+        x = G.setdefault((g, dr), dict(h=[[], []], r5=[], r10=[], br=[], rs=[], dias=[]))
+        x["h"][h].append(r5)
+        x["r5"].append(r5); x["r10"].append(r10)
+        if br is not None: x["br"].append(br)
+        x["rs"].append(rs); x["dias"].append(dias)
+    n_tick = 0
+    for t in ativos:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            log.warning("diag_macd %s: %s", t, e); continue
+        if len(dl) < 300: continue
+        n_tick += 1
+        cl = [b["close"] for b in dl]; N = len(dl)
+        salto = [0] + [1 if abs(cl[i] / cl[i - 1] - 1) > 0.25 else 0 for i in range(1, N)]
+        pref = [0]
+        for x in salto: pref.append(pref[-1] + x)
+        di = _supertrend_dir(dl); hi = _macd_hist(cl)
+        meio = N // 2
+        ult = {("flip+macd", 1): -99, ("flip+macd", -1): -99, ("so linha", 1): -99, ("so linha", -1): -99}
+        for i in range(60, N - 31):
+            if pref[i + 32] - pref[i - 1] > 0: continue
+            flip = {1: di[i] == 1 and di[i - 1] == -1, -1: di[i] == -1 and di[i - 1] == 1}
+            cruz = {1: hi[i] > 0 >= hi[i - 1], -1: hi[i] < 0 <= hi[i - 1]}
+            h = 0 if i < meio else 1
+            for dr in (1, -1):
+                grupos = ["qualquer dia"]
+                if flip[dr]: grupos.append("so linha")
+                fl_rec = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+                cr_rec = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+                if (flip[dr] and cr_rec) or (cruz[dr] and fl_rec):
+                    grupos.append("flip+macd")
+                for g in grupos:
+                    if g != "qualquer dia":
+                        if i - ult[(g, dr)] < 5: continue
+                        ult[(g, dr)] = i
+                    r5 = (cl[i + 5] / cl[i] - 1) * 100 * dr
+                    r10 = (cl[i + 10] / cl[i] - 1) * 100 * dr
+                    br = _barreira(dl, i, "long" if dr == 1 else "short", 0.03)
+                    k_s = i + 30
+                    for k in range(i + 1, i + 31):
+                        if (dr == 1 and hi[k] < hi[k - 1]) or (dr == -1 and hi[k] > hi[k - 1]):
+                            k_s = k; break
+                    rs = (cl[k_s] / cl[i] - 1) * 100 * dr
+                    add(g, dr, h, r5, r10, br, rs, k_s - i)
+    if not n_tick:
+        messenger.send("MACD: sem dados."); return
+    med = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 2) + "%"
+    def lin(x):
+        if not x or len(x["r5"]) < 5: return "poucos casos"
+        n = len(x["r5"]); up = 100 * sum(1 for v in x["r5"] if v > 0) / n
+        br = (100 * sum(x["br"]) / len(x["br"])) if x["br"] else 0
+        ups = 100 * sum(1 for v in x["rs"] if v > 0) / n
+        return (f"{n} casos · 5d {sg(med(x['r5']))} ({fmt(up, 0)}% a favor) · 10d {sg(med(x['r10']))} · +3% antes de −3%: {fmt(br, 0)}%\n"
+                f"      saída no encolher do histograma: {sg(med(x['rs']))} ({fmt(ups, 0)}% positivos, {fmt(med(x['dias']), 0)} pregões)")
+    L = [f"REGRA DO MACD + LINHA (5 anos, diário, {n_tick} ativos incl. BOVA11)", "Linha ATR 10x3 · MACD 12,26,9 · entrada no fechamento do sinal", ""]
+    for dr, nm in ((-1, "VENDA (put)"), (1, "COMPRA (call)")):
+        L.append(nm)
+        for g in ("flip+macd", "so linha", "qualquer dia"):
+            L.append(f"  {g}: " + lin(G.get((g, dr))))
+        x = G.get(("flip+macd", dr))
+        if x and len(x["h"][0]) >= 5 and len(x["h"][1]) >= 5:
+            L.append(f"  1ª metade {sg(med(x['h'][0]))} ({len(x['h'][0])}) · 2ª metade {sg(med(x['h'][1]))} ({len(x['h'][1])}) (retorno 5d)")
+        L.append("")
+    L.append("Leitura: a regra só importa se flip+macd ficar acima de 'qualquer dia' nas duas metades e acima de 'só linha'.")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2687,7 +2805,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2965,6 +3083,8 @@ def serve():
         s.add_job(_once_key("regime:2026-11-12", job_diag_regime), "date", run_date=now() + timedelta(seconds=150), id="regime_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do regime nos alertas
         s.add_job(_once_key("regimevivo:2026-11-12", job_diag_regime_vivo), "date", run_date=now() + timedelta(seconds=150), id="regimevivo_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do MACD
+        s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
