@@ -2238,6 +2238,74 @@ def _diag_veredito():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_controle():
+    try:
+        _diag_controle()
+    except Exception as e:
+        log.exception("diag_controle falhou")
+        messenger.send(f"Teste de controle falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_controle():
+    """Comando 'controle' (so leitura): para cada alerta com opcao, compara o pico da opcao do robo com o da opcao OPOSTA (put no lugar de call e vice-versa; strike espelhado em torno do preco, mesma IV, preco por Black-Scholes). Se o oposto tambem tem muitas janelas, o 'pico' vem da volatilidade e nao do acerto de direcao."""
+    from messenger import fmt
+    import json as _j
+    from datetime import datetime as _dt
+    api = Brapi(); tz = positions.config_tz()
+    with database.conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+    res = []
+    for r in rows:
+        p = _j.loads(r["payload"]); o, sig = p.get("option"), p.get("signal")
+        if not o or not sig or p.get("bloq_mercado"): continue
+        try:
+            d0 = _dt.strptime(r["date"], "%Y-%m-%d").date()
+            daily = api.history(r["ticker"], "3mo", "1d")
+            bars = [(_dt.fromtimestamp(b["date"], tz).date(), b) for b in daily]
+            bars = [(d, b) for d, b in bars if d > d0][:15]
+            if not bars: continue
+            call = sig["direction"] == "long"; pr = sig["price"]
+            if any(abs(b["close"] / pr - 1) > 0.4 for d, b in bars): continue
+            exp = _dt.strptime(o["expiration"], "%Y-%m-%d").date()
+            iv = positions.implied_vol(call, o["ask"], o.get("spot_ref") or pr, o["strike"], max((exp - d0).days, 1) / 365.0)
+            K = o["strike"]; K2 = pr * pr / K          # strike espelhado em torno do preco
+            def pico_de(is_call, strike):
+                q = dict(direction="long" if is_call else "short", strike=strike, expiration=o["expiration"], iv=iv)
+                e0 = positions.est_option(q, pr, d0)
+                if not e0 or e0 <= 0: return None
+                best = -1e9
+                for dd, b in bars:
+                    fav = b["high"] if is_call else b["low"]
+                    best = max(best, positions.est_option(q, fav, dd) / e0 - 1)
+                hoje = positions.est_option(q, bars[-1][1]["close"], bars[-1][0]) / e0 - 1
+                return best * 100, hoje * 100
+            a = pico_de(call, K); b2 = pico_de(not call, K2)
+            if a and b2:
+                res.append(dict(di=r["direction"], t=o.get("symbol") or r["ticker"], d=r["date"], a=a, b=b2))
+        except Exception as e:
+            log.warning("controle %s: %s", r["ticker"], e)
+    if not res:
+        messenger.send("Controle: sem dados."); return
+    def bloco(nome, g, k):
+        pk = sorted(x[k][0] for x in g)
+        return (f"{nome}: pico +20% em {sum(1 for x in g if x[k][0] >= 20)} de {len(g)} ({fmt(100 * sum(1 for x in g if x[k][0] >= 20) / len(g), 0)}%) · +50%: {sum(1 for x in g if x[k][0] >= 50)} · "
+                f"nunca passou de +5%: {sum(1 for x in g if x[k][0] < 5)} · mediano {fmt(pk[len(pk) // 2], 0)}% · positivos hoje {sum(1 for x in g if x[k][1] > 0)}")
+    L = ["CONTROLE: OPÇÃO DO ROBÔ x OPÇÃO OPOSTA (mesmos alertas)", f"{len(res)} alertas", ""]
+    for titulo, g in (("TODOS", res), ("SÓ PUTS (robô)", [x for x in res if x["di"] == "short"]), ("SÓ CALLS (robô)", [x for x in res if x["di"] == "long"])):
+        if not g: continue
+        L += [titulo, "  " + bloco("Robô  ", g, "a"), "  " + bloco("Oposta", g, "b")]
+    melhor = sum(1 for x in res if x["a"][0] > x["b"][0])
+    L += ["", f"Em quantos alertas o pico do robô foi maior que o da oposta: {melhor} de {len(res)}", "", "Cada alerta (pico robô / pico oposta):"]
+    sg = lambda v: ("+" if v >= 0 else "−") + fmt(abs(v), 0) + "%"
+    for x in res:
+        L.append(f"{'▲' if x['di'] == 'long' else '▼'} {x['t']} {x['d'][8:10]}/{x['d'][5:7]} · {sg(x['a'][0])} / {sg(x['b'][0])}")
+    L += ["", "Oposta = strike espelhado, mesma IV, sem skew nem spread. Compara ordem de grandeza, não valores exatos."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2471,7 +2539,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2743,6 +2811,8 @@ def serve():
         s.add_job(_once_key("toque:2026-11-12", job_diag_toque), "date", run_date=now() + timedelta(seconds=150), id="toque_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do veredito
         s.add_job(_once_key("veredito:2026-11-12", job_diag_veredito), "date", run_date=now() + timedelta(seconds=150), id="veredito_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de controle
+        s.add_job(_once_key("controle:2026-11-12", job_diag_controle), "date", run_date=now() + timedelta(seconds=150), id="controle_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
