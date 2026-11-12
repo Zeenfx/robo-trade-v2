@@ -2909,6 +2909,91 @@ def _diag_intradia():
         messenger.send(txt[i:i + 3800])
 
 
+
+# horarios (aprox., +-10 min) lidos nos prints do Couto em 12/11/2026; 1 = compra, -1 = venda
+MARCAS_12_11 = {"BOVA11": [("12:30", 1), ("14:15", -1), ("17:40", 1)],
+                "PETR4": [("10:40", 1), ("11:30", -1), ("12:13", 1), ("17:31", -1)],
+                "SUZB3": [("12:40", -1), ("15:47", 1)]}
+
+def job_diag_calibra():
+    try:
+        _diag_calibra()
+    except Exception as e:
+        log.exception("diag_calibra falhou")
+        messenger.send(f"Calibração da linha e do MACD falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_calibra():
+    """Comando 'calibra' (so leitura): testa varios parametros da linha (periodo x fator) e do MACD e mostra quais reproduzem as compras/vendas que o Couto marcou nos prints de 12/11 (BOVA11, PETR4, SUZB3)."""
+    from messenger import fmt
+    api = Brapi()
+    dados = {}; usado = None
+    for iv_, rg in (("5m", "5d"), ("5m", "1mo"), ("15m", "1mo")):
+        try:
+            tmp = {t: api.history(t, rg, iv_) for t in MARCAS_12_11}
+            if all(len(v) > 100 for v in tmp.values()):
+                dados, usado = tmp, iv_; break
+        except Exception as e:
+            log.warning("calibra %s %s: %s", iv_, rg, e)
+    if not dados:
+        messenger.send("Calibração: a brapi não entregou candles intradiários."); return
+    tol = 12 if usado == "5m" else 20
+    hm = lambda c: datetime.fromtimestamp(c["date"], TZ)
+    alvo = date(2026, 11, 12)
+    minutos = lambda hhmm: int(hhmm[:2]) * 60 + int(hhmm[3:])
+    def eventos(dl, serie, tipo):
+        """lista (minuto, direcao) em 12/11 entre 10:30 e 17:45"""
+        out = []
+        for i in range(1, len(dl)):
+            h = hm(dl[i])
+            if h.date() != alvo: continue
+            m = h.hour * 60 + h.minute
+            if not (10 * 60 + 30 <= m <= 17 * 60 + 45): continue
+            if tipo == "linha":
+                if serie[i] != serie[i - 1]: out.append((m, serie[i]))
+            else:
+                if serie[i] > 0 >= serie[i - 1]: out.append((m, 1))
+                elif serie[i] < 0 <= serie[i - 1]: out.append((m, -1))
+        return out
+    def casa(ev, marcas, tol_):
+        usados = set(); ach = 0
+        for hhmm, d in marcas:
+            mm = minutos(hhmm); best = None
+            for k, (m, dd) in enumerate(ev):
+                if dd == d and k not in usados and abs(m - mm) <= tol_ and (best is None or abs(m - mm) < abs(ev[best][0] - mm)): best = k
+            if best is not None: usados.add(best); ach += 1
+        return ach, len(ev) - len(usados)
+    total = sum(len(v) for v in MARCAS_12_11.values())
+    linhas = []
+    for per in (7, 10, 14, 20, 34, 50):
+        for mult in (1.0, 1.5, 2.0, 2.5, 3.0, 3.5):
+            ach = ext = 0; det = []
+            for t, dl in dados.items():
+                ev = eventos(dl, _supertrend_dir(dl, per, mult), "linha")
+                a, e = casa(ev, MARCAS_12_11[t], tol)
+                ach += a; ext += e; det.append(f"{t} {a}/{len(MARCAS_12_11[t])}+{e}")
+            linhas.append((ach * 2 - ext, per, mult, ach, ext, det))
+    linhas.sort(key=lambda x: (-x[0], x[1]))
+    macds = []
+    for a_, b_, c_ in ((12, 26, 9), (14, 34, 9), (14, 34, 5), (14, 34, 14), (8, 21, 5), (5, 34, 5), (12, 34, 9), (10, 34, 10)):
+        ach = ext = 0
+        for t, dl in dados.items():
+            ev = eventos(dl, _macd_hist([b["close"] for b in dl], a_, b_, c_), "macd")
+            a, e = casa(ev, MARCAS_12_11[t], tol + 8)
+            ach += a; ext += e
+        macds.append((ach * 2 - ext * 0.5, a_, b_, c_, ach, ext))
+    macds.sort(key=lambda x: -x[0])
+    L = [f"CALIBRAÇÃO (candles de {usado}, 12/11; {total} marcas lidas nos seus prints, tolerância ±{tol} min)", "", "LINHA (período, fator): marcas achadas / extras (viradas que você não marcou)"]
+    for sc, per, mult, ach, ext, det in linhas[:6]:
+        L.append(f"  {per}, {fmt(mult, 1)}: {ach}/{total} achadas · {ext} extras ({'; '.join(det)})")
+    padrao = next(x for x in linhas if x[1] == 10 and x[2] == 3.0)
+    L.append(f"  (a que eu usava, 10 e 3,0: {padrao[3]}/{total} achadas · {padrao[4]} extras)")
+    L += ["", "MACD (rápida, lenta, sinal): cruzamentos do histograma perto das marcas"]
+    for sc, a_, b_, c_, ach, ext in macds[:5]:
+        L.append(f"  {a_}, {b_}, {c_}: {ach}/{total} achadas · {ext} cruzamentos extras")
+    L += ["", "Os horários das marcas são aproximados (±10 min, lidos do eixo dos prints). Só leitura."]
+    messenger.send("\n".join(L))
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3142,7 +3227,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3425,6 +3510,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao
+        s.add_job(_once_key("calibra:2026-11-12", job_diag_calibra), "date", run_date=now() + timedelta(seconds=240), id="calibra_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste intradiario
         s.add_job(_once_key("intradia:2026-11-12", job_diag_intradia), "date", run_date=now() + timedelta(seconds=200), id="intradia_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do MACD na opcao
