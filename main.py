@@ -2747,6 +2747,70 @@ def _diag_macd_opcao():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_bova_diario(manual=False):
+    try:
+        _bova_diario(manual)
+    except Exception as e:
+        log.exception("bova_diario falhou")
+        messenger.send(f"BOVA11 diário falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def job_bova_manual():
+    job_bova_diario(True)
+
+def _bova_diario(manual=False):
+    """Rotina diaria do BOVA11 (depois do fechamento): CALL quando a linha vira para cima e o histograma do MACD cruza o zero (regra do Couto, grafico diario); depois, avisa para sair quando o histograma comecar a encolher ou a linha virar para baixo."""
+    from messenger import fmt
+    from types import SimpleNamespace as NS
+    api, t0 = Brapi(), now()
+    dl = api.history("BOVA11", "1y", "1d")
+    if len(dl) < 80: raise RuntimeError("poucos candles do BOVA11")
+    dia = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    if dia(dl[-1]) != t0.date():
+        if manual: messenger.send("BOVA11: ainda sem o candle de hoje.")
+        return
+    cl = [b["close"] for b in dl]; N = len(dl)
+    di = _supertrend_dir(dl); hi = _macd_hist(cl)
+    ult = -99; sinal_hoje = False
+    for i in range(60, N):
+        fl = any(di[k] == 1 and di[k - 1] == -1 for k in range(i - 2, i + 1))
+        cr = any(hi[k] > 0 >= hi[k - 1] for k in range(i - 2, i + 1))
+        hoje = di[i] == 1 and di[i - 1] == -1 or (hi[i] > 0 >= hi[i - 1])   # o sinal nasce no candle em que o ultimo dos dois eventos acontece
+        if fl and cr and hoje and i - ult >= 5:
+            ult = i
+            if i == N - 1: sinal_hoje = True
+    hoje_s = str(t0.date())
+    aberta = database.get_meta("bova:aberta")
+    # saida
+    if aberta and aberta < hoje_s:
+        encolhe = hi[-1] < hi[-2]
+        virou = di[-1] == -1
+        dias = sum(1 for c in dl if aberta < str(dia(c)) <= hoje_s)
+        if encolhe or virou or dias >= 30:
+            motivo = "a linha virou para baixo" if virou else ("o histograma do MACD começou a encolher" if encolhe else "30 pregões sem saída")
+            messenger.send(f"🔔 <b>BOVA11 · hora de sair da CALL</b>\nDiário: {motivo}.\nBOVA11 fechou a {fmt(cl[-1])} ({dias} pregões desde o sinal de {aberta[8:]}/{aberta[5:7]}).")
+            database.set_meta("bova:aberta", "")
+            aberta = ""
+    if sinal_hoje and not database.get_meta("bova:call:" + hoje_s):
+        sig = NS(ticker="BOVA11", direction="long")
+        try:
+            opt, err = options_selector.select(api, sig, t0.date())
+        except BrapiError as e:
+            opt, err = None, str(e)
+        L = ["🟢 <b>CALL · BOVA11</b>", "Diário: a linha virou para cima e o MACD cruzou", f"BOVA11 fechou a {fmt(cl[-1])}", ""]
+        if opt:
+            L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
+                  f"Compra: até ~{fmt(opt['ask'])} (preço do fechamento, confira o ask)", f"Delta {fmt(abs(opt['delta']))} · spread {fmt(opt['spread_pct'], 0)}%"]
+        else:
+            L += [f"Sem opção líquida no filtro: {err}"]
+        L += ["", "Aviso de saída: quando o histograma começar a encolher ou a linha virar para baixo."]
+        messenger.send("\n".join(L))
+        database.set_meta("bova:call:" + hoje_s, "1")
+        database.set_meta("bova:aberta", hoje_s)
+    elif manual:
+        messenger.send(f"BOVA11 diário: sem sinal hoje. Linha {'para cima' if di[-1] == 1 else 'para baixo'}, histograma {'subindo' if hi[-1] > hi[-2] else 'caindo'} ({fmt(hi[-1], 3)}). Posição de call em aberto: {aberta or 'nenhuma'}.")
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2980,7 +3044,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3191,6 +3255,7 @@ def serve():
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
+    s.add_job(_util(job_bova_diario), "cron", day_of_week=wk, hour=18, minute=10, id="bova_diario", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=45, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
         s.add_job(_once_key("resend:morning:2026-10-30", job_morning), "date", run_date=now() + timedelta(seconds=45), id="resend_morning")
