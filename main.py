@@ -2824,6 +2824,91 @@ def _linha_macd_ativo(api, t0, t, manual):
     return f"{t}: linha {'para cima' if di[-1] == 1 else 'para baixo'}, histograma {'subindo' if hi[-1] > hi[-2] else 'caindo'}, call em aberto: {aberta or 'não'}"
 
 
+
+def job_diag_intradia():
+    try:
+        _diag_intradia()
+    except Exception as e:
+        log.exception("diag_intradia falhou")
+        messenger.send(f"Teste intradiário linha+MACD falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_intradia():
+    """Comando 'intradia' (so leitura): regra linha + MACD nos candles intradiarios (5 min se a brapi entregar, senao 15) do BOVA11 e de PETR4/VALE3/BBAS3/ITUB4/BBDC4. Entrada no fechamento do candle do sinal (10:30 a 16:30), saida quando o histograma encolhe (1 ou 2 barras seguidas), a linha vira contra ou o dia acaba. Compara com entrar em candles aleatorios com a mesma saida."""
+    from messenger import fmt
+    api = Brapi()
+    dados = {}; usado = None
+    for iv_, rg in (("5m", "1mo"), ("5m", "5d"), ("15m", "1mo")):
+        try:
+            tmp = {}
+            for t in LISTA_DIARIA:
+                h = api.history(t, rg, iv_)
+                if len(h) > 100: tmp[t] = h
+            if tmp:
+                dados, usado = tmp, f"{iv_} / {rg}"; break
+        except Exception as e:
+            log.warning("intradia %s %s: %s", iv_, rg, e)
+    if not dados:
+        messenger.send("Teste intradiário: a brapi não entregou candles intradiários."); return
+    hm = lambda c: datetime.fromtimestamp(c["date"], TZ)
+    R = {}
+    def add(ch, **kw):
+        x = R.setdefault(ch, dict(mov=[], mfe=[], dur=[], dia=set(), ref=[]))
+        for k, v in kw.items():
+            if k == "dia": x["dia"].add(v)
+            else: x[k].append(v)
+    ndias = set()
+    for t, dl in dados.items():
+        cl = [b["close"] for b in dl]; N = len(dl)
+        di = _supertrend_dir(dl); hi = _macd_hist(cl)
+        dias = [hm(b).date() for b in dl]
+        ndias.update(dias)
+        meio = sorted(set(dias))[len(set(dias)) // 2]
+        ult = {1: -99, -1: -99}
+        for i in range(40, N - 1):
+            h = hm(dl[i])
+            if not (10 <= h.hour + h.minute / 60 <= 16.5): continue
+            for dr in (1, -1):
+                fl = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+                cr = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+                nasce = (di[i] == dr and di[i - 1] == -dr) or ((hi[i] > 0 >= hi[i - 1]) if dr == 1 else (hi[i] < 0 <= hi[i - 1]))
+                sinal = fl and cr and nasce and i - ult[dr] >= 5
+                base = (i % 6 == 0) and dr == 1 or (i % 6 == 3 and dr == -1)
+                if not sinal and not base: continue
+                if sinal: ult[dr] = i
+                for modo in (1, 2):
+                    k = i + 1; fim = i
+                    while k < N and dias[k] == dias[i]:
+                        fim = k
+                        enc = all((hi[k - j] < hi[k - j - 1]) if dr == 1 else (hi[k - j] > hi[k - j - 1]) for j in range(modo))
+                        if enc or di[k] == -dr: break
+                        k += 1
+                    mov = dr * (cl[fim] / cl[i] - 1) * 100
+                    mfe = max(dr * (((dl[j]["high"] if dr == 1 else dl[j]["low"]) / cl[i]) - 1) * 100 for j in range(i + 1, fim + 1)) if fim > i else 0.0
+                    ch = ("sinal" if sinal else "qualquer candle", "BOVA11" if t == "BOVA11" else "ações", dr, modo)
+                    add(ch, mov=mov, mfe=mfe, dur=(fim - i), dia=dias[i])
+    min_c = 5 if usado.startswith("5m") else 15
+    med = lambda v: sorted(v)[len(v) // 2] if v else 0.0
+    avg = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x, n=2: ("+" if x >= 0 else "−") + fmt(abs(x), n) + "%"
+    L = [f"REGRA LINHA + MACD INTRADIÁRIA (candles de {usado}, {len(ndias)} pregões)", "Entrada no fechamento do candle do sinal (10:00 a 16:30). Saída: histograma encolhe, linha vira contra ou fim do dia. Movimento do ativo, sem custo.", "Para cobrir ~10% de spread na opção, o ativo precisa andar uns +0,5%.", ""]
+    for g in ("BOVA11", "ações"):
+        for dr, nm in ((1, "CALL"), (-1, "PUT")):
+            for modo in (1, 2):
+                x = R.get(("sinal", g, dr, modo)); b = R.get(("qualquer candle", g, dr, modo))
+                if not x or len(x["mov"]) < 5: continue
+                n = len(x["mov"]); nd = max(1, len(ndias))
+                L.append(f"{nm} {g}, sair com {modo} barra{'s' if modo > 1 else ''} encolhendo: {n} sinais ({fmt(n / nd, 1)} por dia)")
+                L.append(f"  ativo: média {sg(avg(x['mov']))} · mediana {sg(med(x['mov']))} · positivos {fmt(100 * sum(1 for v in x['mov'] if v > 0) / n, 0)}% · acima de +0,5%: {fmt(100 * sum(1 for v in x['mov'] if v >= 0.5) / n, 0)}%")
+                L.append(f"  melhor ponto (pico): média {sg(avg(x['mfe']))} · duração média {fmt(avg(x['dur']) * min_c, 0)} min")
+                if b and len(b["mov"]) >= 30:
+                    L.append(f"  qualquer candle ({len(b['mov'])} casos): média {sg(avg(b['mov']))} · positivos {fmt(100 * sum(1 for v in b['mov'] if v > 0) / len(b['mov']), 0)}% · acima de +0,5%: {fmt(100 * sum(1 for v in b['mov'] if v >= 0.5) / len(b['mov']), 0)}%")
+                L.append("")
+    L.append("Só leitura. Não inclui o preço real da opção.")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3057,7 +3142,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3340,6 +3425,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste intradiario
+        s.add_job(_once_key("intradia:2026-11-12", job_diag_intradia), "date", run_date=now() + timedelta(seconds=200), id="intradia_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do MACD na opcao
         s.add_job(_once_key("macdopcao:2026-11-12", job_diag_macd_opcao), "date", run_date=now() + timedelta(seconds=150), id="macdopcao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
