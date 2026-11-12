@@ -2653,6 +2653,100 @@ def _diag_macd_valida():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_macd_opcao():
+    try:
+        _diag_macd_opcao()
+    except Exception as e:
+        log.exception("diag_macd_opcao falhou")
+        messenger.send(f"Teste do MACD na opção falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_macd_opcao():
+    """Comando 'macdopcao' (so leitura): a regra linha+MACD traduzida para opcao (Black-Scholes, delta 0,5, proximo vencimento mensal com 25+ dias, vol historica de 20 dias, spread de 5% por lado). Saida pelo encolher do histograma e saida fixa em 5 pregoes; compara com entrar em qualquer dia (5 pregoes)."""
+    from messenger import fmt
+    import opcao_teste as ot
+    api = Brapi(); CUSTO = 0.05
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    R = {}
+    def add(chave, **kw):
+        x = R.setdefault(chave, dict(rs=[], r5=[], pico=[], dias=[]))
+        for k, v in kw.items(): x[k].append(v)
+    def opcao(dl, i, dr, vol_d):
+        call = dr == 1; d = dia_de(dl[i]); S = dl[i]["close"]
+        venc = ot.vencimentos(d, 1, 25)[0]
+        sig = ot.sigma_hist(dl[:i + 1], d)
+        dias0 = (venc - d).days
+        K = ot.strike_por_delta(call, S, dias0 / 365.0, sig, 0.5)
+        p0 = ot.valor(call, S, K, dias0, sig) * (1 + CUSTO)
+        return call, venc, sig, K, p0
+    n_tick = 0
+    for t in list(config.UNIVERSE) + ["BOVA11"]:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            log.warning("diag_macd_opcao %s: %s", t, e); continue
+        if len(dl) < 300: continue
+        n_tick += 1
+        grupo = "BOVA11" if t == "BOVA11" else "ações"
+        cl = [b["close"] for b in dl]; N = len(dl)
+        salto = [0] + [1 if abs(cl[i] / cl[i - 1] - 1) > 0.25 else 0 for i in range(1, N)]
+        pref = [0]
+        for x in salto: pref.append(pref[-1] + x)
+        di = _supertrend_dir(dl); hi = _macd_hist(cl)
+        ult = {1: -99, -1: -99}
+        for i in range(60, N - 32):
+            if pref[i + 33] - pref[i - 1] > 0: continue
+            for dr in (1, -1):
+                fl = di[i] == dr and di[i - 1] == -dr
+                cr = (hi[i] > 0 >= hi[i - 1]) if dr == 1 else (hi[i] < 0 <= hi[i - 1])
+                fl_rec = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+                cr_rec = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+                sinal = ((fl and cr_rec) or (cr and fl_rec)) and i - ult[dr] >= 5
+                amostra = (i % 5 == 0) and t != "BOVA11"
+                if not sinal and not amostra: continue
+                if sinal: ult[dr] = i
+                try:
+                    call, venc, sig, K, p0 = opcao(dl, i, dr, None)
+                    if p0 <= 0: continue
+                    d0 = dia_de(dl[i])
+                    def val(k, preco):
+                        return ot.valor(call, preco, K, (venc - dia_de(dl[k])).days, sig)
+                    r5 = val(i + 5, cl[i + 5]) * (1 - CUSTO) / p0 - 1
+                    k_s = i + 30
+                    for k in range(i + 1, i + 31):
+                        if (dr == 1 and hi[k] < hi[k - 1]) or (dr == -1 and hi[k] > hi[k - 1]):
+                            k_s = k; break
+                    rs = val(k_s, cl[k_s]) * (1 - CUSTO) / p0 - 1
+                    pico = max(val(k, dl[k]["high"] if call else dl[k]["low"]) * (1 - CUSTO) / p0 - 1 for k in range(i + 1, k_s + 1))
+                    if sinal: add((grupo, dr, "sinal"), rs=rs * 100, r5=r5 * 100, pico=pico * 100, dias=k_s - i)
+                    if amostra: add((grupo, dr, "qualquer dia"), r5=r5 * 100)
+                except Exception as e:
+                    log.warning("macd_opcao %s: %s", t, e)
+    if not n_tick:
+        messenger.send("MACD na opção: sem dados."); return
+    med = lambda v: sorted(v)[len(v) // 2] if v else 0.0
+    avg = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 0) + "%"
+    L = ["REGRA LINHA + MACD NA OPÇÃO (estimada, 5 anos)", "Opção no dinheiro (delta 0,5), próximo vencimento mensal com 25+ dias, spread de 5% por lado", ""]
+    for g in ("ações", "BOVA11"):
+        for dr, nm in ((1, "CALL"), (-1, "PUT")):
+            x = R.get((g, dr, "sinal")); b = R.get((g, dr, "qualquer dia"))
+            if not x or len(x["r5"]) < 5: continue
+            n = len(x["r5"])
+            L.append(f"{nm} em {g}: {n} sinais")
+            L.append(f"  sair no encolher do histograma ({fmt(avg(x['dias']), 0)} pregões): média {sg(avg(x['rs']))} · mediana {sg(med(x['rs']))} · positivos {fmt(100 * sum(1 for v in x['rs'] if v > 0) / n, 0)}%")
+            L.append(f"  sair em 5 pregões: média {sg(avg(x['r5']))} · mediana {sg(med(x['r5']))} · positivos {fmt(100 * sum(1 for v in x['r5'] if v > 0) / n, 0)}%")
+            L.append(f"  pico da opção até a saída: +20% em {fmt(100 * sum(1 for v in x['pico'] if v >= 20) / n, 0)}% · +50% em {fmt(100 * sum(1 for v in x['pico'] if v >= 50) / n, 0)}%")
+            if b and len(b["r5"]) >= 30:
+                L.append(f"  qualquer dia (5 pregões, {len(b['r5'])} casos): média {sg(avg(b['r5']))} · mediana {sg(med(b['r5']))} · positivos {fmt(100 * sum(1 for v in b['r5'] if v > 0) / len(b['r5']), 0)}%")
+            L.append("")
+    L.append("Estimativa: IV constante, sem skew, vol histórica; é ordem de grandeza. Pico usa a máxima do dia (teto).")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2886,7 +2980,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3168,6 +3262,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do MACD na opcao
+        s.add_job(_once_key("macdopcao:2026-11-12", job_diag_macd_opcao), "date", run_date=now() + timedelta(seconds=150), id="macdopcao_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
