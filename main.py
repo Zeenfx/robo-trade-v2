@@ -2163,6 +2163,81 @@ def _diag_toque():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_veredito():
+    try:
+        _diag_veredito()
+    except Exception as e:
+        log.exception("diag_veredito falhou")
+        messenger.send(f"Teste do veredito falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_veredito():
+    """Comando 'veredito' (so leitura): cruza o selo (BOM / NEUTRO / RUIM) e a IV de cada alerta com o pico da opcao depois dele (Black-Scholes, maxima/minima diaria da acao). Inclui os RUIM nao enviados (falso negativo)."""
+    from messenger import fmt, _empate
+    import json as _j, iv_filter
+    from types import SimpleNamespace as NS
+    from datetime import datetime as _dt
+    api = Brapi(); tz = positions.config_tz()
+    with database.conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT date,ticker,direction,payload FROM alerts ORDER BY date").fetchall()]
+    res = []
+    for r in rows:
+        p = _j.loads(r["payload"]); o, sig = p.get("option"), p.get("signal")
+        if not o or not sig or p.get("bloq_mercado"): continue
+        try:
+            d0 = _dt.strptime(r["date"], "%Y-%m-%d").date()
+            daily = api.history(r["ticker"], "3mo", "1d")
+            bars = [(_dt.fromtimestamp(b["date"], tz).date(), b) for b in daily]
+            bars = [(d, b) for d, b in bars if d > d0][:15]
+            if not bars: continue
+            call = sig["direction"] == "long"; pr = sig["price"]
+            if any(abs(b["close"] / pr - 1) > 0.4 for d, b in bars): continue
+            exp = _dt.strptime(o["expiration"], "%Y-%m-%d").date()
+            iv = positions.implied_vol(call, o["ask"], o.get("spot_ref") or pr, o["strike"], max((exp - d0).days, 1) / 365.0)
+            q = dict(direction=sig["direction"], strike=o["strike"], expiration=o["expiration"], iv=iv)
+            e0 = positions.est_option(q, pr, d0)
+            if not e0 or e0 <= 0: continue
+            ivi = p.get("iv") or {}
+            palavra = iv_filter.iv_tag(ivi.get("iv_rank", 0), ivi.get("iv_pct", 0)).split(" ", 1)[1] if ivi else "?"
+            teto = e0 * (1.3 if o.get("last_only") else 1.1)
+            _, _, cobre = _empate(NS(direction=sig["direction"], price=pr, target=sig["target"]), dict(o, ask=teto))
+            if p.get("ruim"): v = "RUIM"
+            elif cobre and palavra != "cara": v = "BOM"
+            else: v = "NEUTRO"
+            pico, kp, hoje = -1e9, 0, 0
+            for k, (dd, b) in enumerate(bars, 1):
+                fav = b["high"] if call else b["low"]
+                vf = positions.est_option(q, fav, dd) / e0 - 1
+                if vf > pico: pico, kp = vf, k
+            hoje = positions.est_option(q, bars[-1][1]["close"], bars[-1][0]) / e0 - 1
+            res.append(dict(v=v, iv=palavra, di=r["direction"], pico=pico * 100, kp=kp, hoje=hoje * 100, t=o.get("symbol") or r["ticker"], d=r["date"]))
+        except Exception as e:
+            log.warning("veredito %s: %s", r["ticker"], e)
+    if not res:
+        messenger.send("Veredito: sem dados."); return
+    def bloco(nome, g):
+        if not g: return f"{nome}: 0 alertas"
+        pk = sorted(x["pico"] for x in g)
+        return (f"{nome}: {len(g)} alertas · pico +20%: {sum(1 for x in g if x['pico'] >= 20)} ({fmt(100 * sum(1 for x in g if x['pico'] >= 20) / len(g), 0)}%) · "
+                f"+50%: {sum(1 for x in g if x['pico'] >= 50)} · nunca passou de +5%: {sum(1 for x in g if x['pico'] < 5)} · pico mediano {fmt(pk[len(pk) // 2], 0)}% · positivos hoje {sum(1 for x in g if x['hoje'] > 0)}")
+    L = ["O VEREDITO ACERTA? (pico da opção depois do alerta)", f"{len(res)} alertas (inclui os RUIM não enviados)", "", "POR SELO"]
+    for v in ("BOM", "NEUTRO", "RUIM"):
+        L.append(bloco(v, [x for x in res if x["v"] == v]))
+    L += ["", "POR IV"]
+    for w in ("barata", "média", "cara"):
+        L.append(bloco(w, [x for x in res if x["iv"] == w]))
+    L += ["", "POR DIREÇÃO"]
+    for d, nm in (("long", "CALL"), ("short", "PUT")):
+        L.append(bloco(nm, [x for x in res if x["di"] == d]))
+    L += ["", "Cada alerta:"]
+    for x in res:
+        L.append(f"{'▲' if x['di'] == 'long' else '▼'} {x['t']} {x['d'][8:10]}/{x['d'][5:7]} · {x['v']} · IV {x['iv']} · pico {'+' if x['pico'] >= 0 else '−'}{fmt(abs(x['pico']), 0)}%")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2396,7 +2471,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2666,6 +2741,8 @@ def serve():
         s.add_job(_once_key("movido:2026-11-12", job_diag_movido), "date", run_date=now() + timedelta(seconds=150), id="movido_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de toque
         s.add_job(_once_key("toque:2026-11-12", job_diag_toque), "date", run_date=now() + timedelta(seconds=150), id="toque_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do veredito
+        s.add_job(_once_key("veredito:2026-11-12", job_diag_veredito), "date", run_date=now() + timedelta(seconds=150), id="veredito_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
