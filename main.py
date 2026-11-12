@@ -2306,6 +2306,80 @@ def _diag_controle():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_regime():
+    try:
+        _diag_regime()
+    except Exception as e:
+        log.exception("diag_regime falhou")
+        messenger.send(f"Teste de regime falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_regime():
+    """Comando 'regime' (so leitura): 5 anos de candles diarios nos ativos. Rompimento do piso (fecha abaixo da minima de 20 dias) ou do topo (fecha acima da maxima de 20 dias), separado pelo mercado: BOVA11 abaixo ou acima da media de 20 dias. Mede, no sentido do sinal, retorno em 5 pregoes, % positivos e +3% antes de -3% em ate 20 pregoes. Compara com qualquer dia no mesmo regime (para ver se o rompimento acrescenta algo) e mostra as duas metades do periodo."""
+    from messenger import fmt
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    bova = api.history("BOVA11", "5y", "1d")
+    bcl = [b["close"] for b in bova]; bidx = {dia_de(b): k for k, b in enumerate(bova)}
+    def regime(d):
+        k = bidx.get(d)
+        if k is None or k < 20: return None
+        return "alta" if bcl[k] >= sum(bcl[k - 19:k + 1]) / 20 else "queda"
+    chaves = [("short", "queda"), ("short", "alta"), ("long", "queda"), ("long", "alta")]
+    sinal = {k: [[], []] for k in chaves}; base = {k: [[], []] for k in chaves}   # [metade][(r5, barreira)]
+    n_tick = 0
+    for t in config.UNIVERSE:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            log.warning("diag_regime %s: %s", t, e); continue
+        if len(dl) < 300: continue
+        n_tick += 1
+        cl = [b["close"] for b in dl]
+        salto = [0] + [1 if abs(cl[i] / cl[i - 1] - 1) > 0.25 else 0 for i in range(1, len(cl))]
+        pref = [0]
+        for x in salto: pref.append(pref[-1] + x)
+        meio = len(dl) // 2
+        for i in range(21, len(dl) - 21):
+            if pref[i + 22] - pref[i - 1] > 0: continue     # janela com salto de serie
+            rg = regime(dia_de(dl[i]))
+            if rg is None: continue
+            h = 0 if i < meio else 1
+            lo20 = min(b["low"] for b in dl[i - 20:i]); hi20 = max(b["high"] for b in dl[i - 20:i])
+            for dr in ("short", "long"):
+                sg = -1 if dr == "short" else 1
+                r5 = (cl[i + 5] / cl[i] - 1) * 100 * sg
+                br = _barreira(dl, i, dr, 0.03)
+                base[(dr, rg)][h].append((r5, br))
+                if (dr == "short" and cl[i] < lo20) or (dr == "long" and cl[i] > hi20):
+                    sinal[(dr, rg)][h].append((r5, br))
+    if not n_tick:
+        messenger.send("Regime: sem dados."); return
+    def resumo(v):
+        if not v: return "sem casos"
+        up = 100 * sum(1 for x in v if x[0] > 0) / len(v)
+        bb = [x[1] for x in v if x[1] is not None]
+        w = (100 * sum(bb) / len(bb)) if bb else 0
+        return f"{len(v)} casos · média 5d {'+' if sum(x[0] for x in v) / len(v) >= 0 else '−'}{fmt(abs(sum(x[0] for x in v) / len(v)), 2)}% · sobe {fmt(up, 0)}% · +3% antes de −3%: {fmt(w, 0)}%"
+    L = ["ROMPIMENTO x MERCADO (5 anos, " + str(n_tick) + " ativos; mercado = BOVA11 vs média de 20 dias)", "No sentido do sinal. Sem vantagem = ~50%.", ""]
+    for dr, nm in (("short", "PUT: fecha abaixo da mínima de 20 dias"), ("long", "CALL: fecha acima da máxima de 20 dias")):
+        L.append(nm)
+        for rg in ("queda", "alta"):
+            a, b = sinal[(dr, rg)]
+            ba, bb_ = base[(dr, rg)]
+            L.append(f"  Mercado em {rg}:")
+            L.append(f"    rompimento: {resumo(a + b)}")
+            L.append(f"      1ª metade: {resumo(a)}")
+            L.append(f"      2ª metade: {resumo(b)}")
+            L.append(f"    qualquer dia: {resumo(ba + bb_)}")
+        L.append("")
+    L.append("Leitura: o rompimento só acrescenta algo se ficar acima de 'qualquer dia' no mesmo mercado, nas duas metades.")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2539,7 +2613,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -2813,6 +2887,8 @@ def serve():
         s.add_job(_once_key("veredito:2026-11-12", job_diag_veredito), "date", run_date=now() + timedelta(seconds=150), id="veredito_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de controle
         s.add_job(_once_key("controle:2026-11-12", job_diag_controle), "date", run_date=now() + timedelta(seconds=150), id="controle_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste de regime
+        s.add_job(_once_key("regime:2026-11-12", job_diag_regime), "date", run_date=now() + timedelta(seconds=150), id="regime_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
