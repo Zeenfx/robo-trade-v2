@@ -2572,6 +2572,87 @@ def _diag_macd():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_diag_macd_valida():
+    try:
+        _diag_macd_valida()
+    except Exception as e:
+        log.exception("diag_macd_valida falhou")
+        messenger.send(f"Validação do MACD falhou: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _diag_macd_valida():
+    """Comando 'macdvalida' (so leitura): a regra linha+MACD (mesmos parametros do 'macd') ano a ano, ativo a ativo, sem os 5 melhores ativos e agrupando os sinais por semana (para tirar a correlacao entre ativos que viram juntos)."""
+    from messenger import fmt
+    api = Brapi()
+    dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
+    sinais = []      # (dr, ticker, data, r5, barreira)
+    base = {}        # (dr, ano) -> [r5 lista, barreiras]
+    n_tick = 0
+    for t in list(config.UNIVERSE) + ["BOVA11"]:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            log.warning("diag_macd_valida %s: %s", t, e); continue
+        if len(dl) < 300: continue
+        n_tick += 1
+        cl = [b["close"] for b in dl]; N = len(dl)
+        salto = [0] + [1 if abs(cl[i] / cl[i - 1] - 1) > 0.25 else 0 for i in range(1, N)]
+        pref = [0]
+        for x in salto: pref.append(pref[-1] + x)
+        di = _supertrend_dir(dl); hi = _macd_hist(cl)
+        ult = {1: -99, -1: -99}
+        for i in range(60, N - 31):
+            if pref[i + 32] - pref[i - 1] > 0: continue
+            d = dia_de(dl[i])
+            for dr in (1, -1):
+                r5 = (cl[i + 5] / cl[i] - 1) * 100 * dr
+                br = _barreira(dl, i, "long" if dr == 1 else "short", 0.03)
+                b = base.setdefault((dr, d.year), [[], []]); b[0].append(r5)
+                if br is not None: b[1].append(br)
+                fl = di[i] == dr and di[i - 1] == -dr
+                cr = (hi[i] > 0 >= hi[i - 1]) if dr == 1 else (hi[i] < 0 <= hi[i - 1])
+                fl_rec = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+                cr_rec = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+                if ((fl and cr_rec) or (cr and fl_rec)) and i - ult[dr] >= 5:
+                    ult[dr] = i
+                    sinais.append((dr, t, d, r5, br))
+    if not n_tick or not sinais:
+        messenger.send("Validação do MACD: sem dados."); return
+    med = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 2) + "%"
+    pc = lambda v: fmt(100 * sum(v) / len(v), 0) + "%" if v else "-"
+    L = [f"VALIDAÇÃO DA REGRA LINHA + MACD ({n_tick} ativos, 5 anos)", "Retorno em 5 pregões no sentido do sinal; entre parênteses a média de qualquer dia no mesmo ano", ""]
+    for dr, nm in ((1, "COMPRA"), (-1, "VENDA")):
+        L.append(nm + " · por ano")
+        anos = sorted({s_[2].year for s_ in sinais if s_[0] == dr})
+        for a in anos:
+            g = [s_ for s_ in sinais if s_[0] == dr and s_[2].year == a]
+            b = base.get((dr, a), [[], []])
+            if len(g) < 5: continue
+            L.append(f"  {a}: {len(g)} sinais · {sg(med([x[3] for x in g]))} ({sg(med(b[0]))}) · a favor {pc([1 if x[3] > 0 else 0 for x in g])} · +3% antes de −3%: {pc([x[4] for x in g if x[4] is not None])} ({pc(b[1])})")
+        g = [s_ for s_ in sinais if s_[0] == dr]
+        por = {}
+        for x in g: por.setdefault(x[1], []).append(x[3])
+        lista = sorted(((med(v), t, len(v)) for t, v in por.items() if len(v) >= 3), reverse=True)
+        pos = sum(1 for m, _, _ in lista if m > 0)
+        L.append(f"  por ativo (com 3+ sinais): {pos} de {len(lista)} com média positiva")
+        top5 = {t for _, t, _ in lista[:5]}
+        rest = [x[3] for x in g if x[1] not in top5]
+        L.append(f"  sem os 5 melhores ativos ({', '.join(sorted(top5))}): {len(rest)} sinais · {sg(med(rest))} · a favor {pc([1 if v > 0 else 0 for v in rest])}")
+        sem = {}
+        for x in g: sem.setdefault(x[2].isocalendar()[:2], []).append(x[3])
+        medias = [med(v) for v in sem.values()]
+        L.append(f"  por semana (tira a correlação): {len(sem)} semanas com sinal · média {sg(med(medias))} · semanas positivas {pc([1 if m > 0 else 0 for m in medias])}")
+        bo = [x[3] for x in g if x[1] == "BOVA11"]
+        if bo: L.append(f"  só BOVA11: {len(bo)} sinais · {sg(med(bo))} · a favor {pc([1 if v > 0 else 0 for v in bo])}")
+        L.append("")
+    L.append("Leitura: vale se o sinal ganhar do 'qualquer dia' na maioria dos anos, sem depender de poucos ativos, e se as semanas positivas passarem de ~55%.")
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -2805,7 +2886,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3085,6 +3166,8 @@ def serve():
         s.add_job(_once_key("regimevivo:2026-11-12", job_diag_regime_vivo), "date", run_date=now() + timedelta(seconds=150), id="regimevivo_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do MACD
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
+    if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
+        s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
     s.add_job(job_telegram_poll, "interval", seconds=30, id="tg_poll", max_instances=1, coalesce=True)
     s.add_job(job_seed_csan3, "date", run_date=now() + timedelta(seconds=100), id="seed_csan3")
     s.add_job(job_diag_opcoes, "date", run_date=now() + timedelta(seconds=120), id="diag_opc")
