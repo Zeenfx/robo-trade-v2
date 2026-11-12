@@ -2748,56 +2748,69 @@ def _diag_macd_opcao():
 
 
 
+LISTA_DIARIA = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BBDC4"]
+
 def job_bova_diario(manual=False):
     try:
         _bova_diario(manual)
     except Exception as e:
         log.exception("bova_diario falhou")
-        messenger.send(f"BOVA11 diário falhou: {type(e).__name__}: {str(e)[:200]}")
+        messenger.send(f"Rotina diária linha+MACD falhou: {type(e).__name__}: {str(e)[:200]}")
 
 def job_bova_manual():
     job_bova_diario(True)
 
 def _bova_diario(manual=False):
-    """Rotina diaria do BOVA11 (depois do fechamento): CALL quando a linha vira para cima e o histograma do MACD cruza o zero (regra do Couto, grafico diario); depois, avisa para sair quando o histograma comecar a encolher ou a linha virar para baixo."""
+    """Rotina diaria (depois do fechamento) no BOVA11 e em 5 acoes liquidas: CALL quando a linha vira para cima e o histograma do MACD cruza o zero (regra do Couto, grafico diario); depois avisa para sair quando o histograma comecar a encolher ou a linha virar para baixo."""
+    api, t0 = Brapi(), now()
+    estados = []
+    for t in LISTA_DIARIA:
+        try:
+            estados.append(_linha_macd_ativo(api, t0, t, manual))
+        except Exception as e:
+            log.warning("linha+MACD %s: %s", t, e)
+            estados.append(f"{t}: erro ({str(e)[:60]})")
+    if manual:
+        messenger.send("Linha + MACD (diário), estado de hoje:\n" + "\n".join(x for x in estados if x))
+
+def _linha_macd_ativo(api, t0, t, manual):
     from messenger import fmt
     from types import SimpleNamespace as NS
-    api, t0 = Brapi(), now()
-    dl = api.history("BOVA11", "1y", "1d")
-    if len(dl) < 80: raise RuntimeError("poucos candles do BOVA11")
+    dl = api.history(t, "1y", "1d")
+    if len(dl) < 80: return f"{t}: poucos candles"
     dia = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
     if dia(dl[-1]) != t0.date():
-        if manual: messenger.send("BOVA11: ainda sem o candle de hoje.")
-        return
+        return f"{t}: sem o candle de hoje"
     cl = [b["close"] for b in dl]; N = len(dl)
     di = _supertrend_dir(dl); hi = _macd_hist(cl)
     ult = -99; sinal_hoje = False
     for i in range(60, N):
         fl = any(di[k] == 1 and di[k - 1] == -1 for k in range(i - 2, i + 1))
         cr = any(hi[k] > 0 >= hi[k - 1] for k in range(i - 2, i + 1))
-        hoje = di[i] == 1 and di[i - 1] == -1 or (hi[i] > 0 >= hi[i - 1])   # o sinal nasce no candle em que o ultimo dos dois eventos acontece
-        if fl and cr and hoje and i - ult >= 5:
+        nasce = (di[i] == 1 and di[i - 1] == -1) or (hi[i] > 0 >= hi[i - 1])   # o sinal nasce no candle do ultimo dos dois eventos
+        if fl and cr and nasce and i - ult >= 5:
             ult = i
             if i == N - 1: sinal_hoje = True
     hoje_s = str(t0.date())
-    aberta = database.get_meta("bova:aberta")
-    # saida
+    ka = "bova:aberta" if t == "BOVA11" else f"lm:aberta:{t}"      # BOVA11 mantem a chave original
+    kc = "bova:call:" if t == "BOVA11" else f"lm:call:{t}:"
+    aberta = database.get_meta(ka)
     if aberta and aberta < hoje_s:
         encolhe = hi[-1] < hi[-2]
         virou = di[-1] == -1
         dias = sum(1 for c in dl if aberta < str(dia(c)) <= hoje_s)
         if encolhe or virou or dias >= 30:
             motivo = "a linha virou para baixo" if virou else ("o histograma do MACD começou a encolher" if encolhe else "30 pregões sem saída")
-            messenger.send(f"🔔 <b>BOVA11 · hora de sair da CALL</b>\nDiário: {motivo}.\nBOVA11 fechou a {fmt(cl[-1])} ({dias} pregões desde o sinal de {aberta[8:]}/{aberta[5:7]}).")
-            database.set_meta("bova:aberta", "")
+            messenger.send(f"🔔 <b>{t} · hora de sair da CALL</b>\nDiário: {motivo}.\n{t} fechou a {fmt(cl[-1])} ({dias} pregões desde o sinal de {aberta[8:]}/{aberta[5:7]}).")
+            database.set_meta(ka, "")
             aberta = ""
-    if sinal_hoje and not database.get_meta("bova:call:" + hoje_s):
-        sig = NS(ticker="BOVA11", direction="long")
+    if sinal_hoje and not database.get_meta(kc + hoje_s):
+        sig = NS(ticker=t, direction="long")
         try:
             opt, err = options_selector.select(api, sig, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        L = ["🟢 <b>CALL · BOVA11</b>", "Diário: a linha virou para cima e o MACD cruzou", f"BOVA11 fechou a {fmt(cl[-1])}", ""]
+        L = [f"🟢 <b>CALL · {t}</b>", "Diário: a linha virou para cima e o MACD cruzou", f"{t} fechou a {fmt(cl[-1])}", ""]
         if opt:
             L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
                   f"Compra: até ~{fmt(opt['ask'])} (preço do fechamento, confira o ask)", f"Delta {fmt(abs(opt['delta']))} · spread {fmt(opt['spread_pct'], 0)}%"]
@@ -2805,10 +2818,10 @@ def _bova_diario(manual=False):
             L += [f"Sem opção líquida no filtro: {err}"]
         L += ["", "Aviso de saída: quando o histograma começar a encolher ou a linha virar para baixo."]
         messenger.send("\n".join(L))
-        database.set_meta("bova:call:" + hoje_s, "1")
-        database.set_meta("bova:aberta", hoje_s)
-    elif manual:
-        messenger.send(f"BOVA11 diário: sem sinal hoje. Linha {'para cima' if di[-1] == 1 else 'para baixo'}, histograma {'subindo' if hi[-1] > hi[-2] else 'caindo'} ({fmt(hi[-1], 3)}). Posição de call em aberto: {aberta or 'nenhuma'}.")
+        database.set_meta(kc + hoje_s, "1")
+        database.set_meta(ka, hoje_s)
+        return f"{t}: SINAL de call hoje"
+    return f"{t}: linha {'para cima' if di[-1] == 1 else 'para baixo'}, histograma {'subindo' if hi[-1] > hi[-2] else 'caindo'}, call em aberto: {aberta or 'não'}"
 
 
 def job_diag_setores():
