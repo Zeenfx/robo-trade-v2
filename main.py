@@ -3890,6 +3890,24 @@ def _near_list(api, today=None):
         log.warning("Balanço na lista de proximos rompimentos: %s", e)
     return report.near_lines(items, notas)
 
+def _linha_diario_bomdia(api):
+    """Linha do bom dia (so leitura): estado diario de BOVA11 e das 5 acoes no ultimo fechamento (linha + histograma do MACD + call em aberto). Nao dispara alerta nem grava nada."""
+    partes = []
+    for t in LISTA_DIARIA:
+        try:
+            dl = api.history(t, "1y", "1d")
+            if len(dl) < 80:
+                partes.append(f"{t} sem dado"); continue
+            di = _supertrend_dir(dl); hi = _macd_hist([b["close"] for b in dl])
+            ka = "bova:aberta" if t == "BOVA11" else f"lm:aberta:{t}"
+            seta = "▲" if di[-1] == 1 else "▼"
+            hist = "sobe" if hi[-1] > hi[-2] else "cai"
+            partes.append(f"{seta} {t} {hist}" + (" · call aberta" if database.get_meta(ka) else ""))
+        except Exception as e:
+            log.warning("bom dia diario %s: %s", t, e)
+            partes.append(f"{t} erro")
+    return "Diário (linha · MACD): " + " | ".join(partes)
+
 def job_morning():
     """09:30: robo vivo, estado da IV do mercado e ativos perto de romper."""
     import report
@@ -3921,6 +3939,10 @@ def job_morning():
             L.append(lb)
     except Exception as e:
         log.warning("Linha de balanços do bom dia: %s", e)
+    try:   # estado diario de BOVA11 e das 5 acoes (so leitura)
+        L.append(_linha_diario_bomdia(Brapi()))
+    except Exception as e:
+        log.warning("Linha diaria do bom dia: %s", e)
     messenger.send("\n".join(L))
 
 def job_heartbeat():
