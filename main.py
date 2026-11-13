@@ -3514,7 +3514,7 @@ def job_gravar_candles(manual=False):
     """Guarda todo dia os candles de 5 min do BOVA11 e das 5 acoes (a brapi so entrega ~7 dias; assim o historico cresce). Nao altera nenhum alerta."""
     try:
         api = Brapi(); novos = 0; erros = []
-        for t in LISTA_DIARIA:
+        for t in _tickers_5m():
             try:
                 novos += database.save_candles(t, "5m", api.history(t, "5d", "5m"))
             except Exception as e:
@@ -3926,6 +3926,10 @@ def _diag_linhas():
 
 
 # ---- Placar de regras intradiarias de 5 min (so registro e medicao: nao envia alerta de entrada) ----
+def _tickers_5m():
+    """BOVA11 + 5 acoes do diario + todos os ativos do robo (sem repetir)."""
+    return list(dict.fromkeys(list(LISTA_DIARIA) + list(config.UNIVERSE)))
+
 VARIANTES_5M = {"A": "linha + MACD cruzando o zero", "B": "A com barras do histograma simétricas antes (compressão)", "C": "reentrada: tendência de pé, histograma crescendo e recuo de 0,5 ATR"}
 
 def _atr_serie(dl):
@@ -3975,7 +3979,7 @@ def job_sinais_5m():
         hh = t0.hour + t0.minute / 60
         if not (10.5 <= hh <= 17.2): return
         api = Brapi(); novos = 0
-        for t in LISTA_DIARIA:
+        for t in _tickers_5m():
             try:
                 dl = api.history(t, "5d", "5m")
                 if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]      # candle ainda formando
@@ -4055,6 +4059,10 @@ def _placar_5m_texto(desde=None):
         L.append(f"  opção: pico acima de +20%: {pc(lambda r: (r['opc_pico'] or 0) >= 20)} · saída positiva: {fmt(100 * sum(1 for x in mo if x > 0) / max(len(mo), 1), 0)}%")
         bo = [r["h2"] for s, r in av if s["ticker"] == "BOVA11"]
         if bo: L.append(f"  BOVA11: {len(bo)} sinais, acima de +0,5%: {fmt(100 * sum(1 for x in bo if x >= 0.5) / len(bo), 0)}%")
+        for nome_g, f_g in (("6 principais", lambda s: s["ticker"] in LISTA_DIARIA), ("outros ativos", lambda s: s["ticker"] not in LISTA_DIARIA)):
+            g = [(s, r) for s, r in av if f_g(s)]
+            if g:
+                L.append(f"  {nome_g}: {len(g)} sinais · ativo acima de +0,5%: {fmt(100 * sum(1 for s, r in g if r['h2'] >= 0.5) / len(g), 0)}% · opção pico acima de +20%: {fmt(100 * sum(1 for s, r in g if (r['opc_pico'] or 0) >= 20) / len(g), 0)}%")
     if pend: L.append(f"\n{pend} sinais ainda sem medir (dia aberto ou sem dado).")
     if not todos: L.append("Ainda não há sinais gravados.")
     return "\n".join(L)
