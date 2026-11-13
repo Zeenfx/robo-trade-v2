@@ -2995,6 +2995,26 @@ def _diag_calibra():
 
 
 
+def _dir_halftrend(dl, amp=4):
+    """HalfTrend (Everget): 1 = alta (compra), -1 = baixa (venda). So a amplitude decide as viradas; o desvio do canal so afeta as bandas."""
+    n = len(dl); trend = 0; nxt = 0
+    max_low = dl[0]["low"]; min_high = dl[0]["high"]; out = []
+    for i in range(n):
+        j = max(0, i - amp + 1)
+        hi_p = max(b["high"] for b in dl[j:i + 1]); lo_p = min(b["low"] for b in dl[j:i + 1])
+        hi_ma = sum(b["high"] for b in dl[j:i + 1]) / (i + 1 - j); lo_ma = sum(b["low"] for b in dl[j:i + 1]) / (i + 1 - j)
+        low1 = dl[i - 1]["low"] if i else dl[i]["low"]; high1 = dl[i - 1]["high"] if i else dl[i]["high"]
+        if nxt == 1:
+            max_low = max(lo_p, max_low)
+            if hi_ma < max_low and dl[i]["close"] < low1:
+                trend = 1; nxt = 0; min_high = hi_p
+        else:
+            min_high = min(hi_p, min_high)
+            if lo_ma > min_high and dl[i]["close"] > high1:
+                trend = 0; nxt = 1; max_low = lo_p
+        out.append(1 if trend == 0 else -1)
+    return out
+
 def _dir_donchian(dl, n):
     d = [1] * len(dl); cur = 1
     for i in range(len(dl)):
@@ -3080,6 +3100,7 @@ def _diag_calibra2():
     for n in (14, 22, 34):
         for k in (1.5, 2.0, 3.0): cand.append((f"Chandelier {n} x{fmt(k, 1)}", lambda dl, n=n, k=k: _dir_chandelier(dl, n, k)))
     for mult in (4.0, 5.0, 6.0): cand.append((f"SuperTrend 34 x{fmt(mult, 1)}", lambda dl, m=mult: _supertrend_dir(dl, 34, m)))
+    for amp in (2, 3, 4, 5, 6, 8): cand.append((f"HalfTrend amplitude {amp}", lambda dl, a=amp: _dir_halftrend(dl, a)))
     res = []
     for nome, fn in cand:
         ach = ext = 0; det = []; erro_tot = []
@@ -3089,7 +3110,10 @@ def _diag_calibra2():
         res.append((ach * 2 - ext, nome, ach, ext, det, (sum(erro_tot) / len(erro_tot) if erro_tot else 0)))
     res.sort(key=lambda x: -x[0])
     L = [f"CALIBRAÇÃO 2 (candles de {usado}, 12/11; {total} marcas, tolerância ±{tol} min)", "Marcas achadas / viradas extras (viradas que o seu gráfico não mostra)", ""]
-    for sc, nome, ach, ext, det, er in res[:8]:
+    top = res[:8]
+    ht4 = next((x for x in res if x[1] == "HalfTrend amplitude 4"), None)
+    if ht4 and ht4 not in top: top = top[:7] + [ht4]
+    for sc, nome, ach, ext, det, er in top:
         L.append(f"{nome}: {ach}/{total} achadas · {ext} extras · erro médio {fmt(er, 0)} min ({'; '.join(det)})")
     L += ["", "Só leitura. Horários das marcas aproximados."]
     messenger.send("\n".join(L))
