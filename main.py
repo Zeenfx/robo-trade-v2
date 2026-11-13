@@ -2804,13 +2804,18 @@ def _linha_macd_ativo(api, t0, t, manual):
             messenger.send(f"🔔 <b>{t} · hora de sair da CALL</b>\nDiário: {motivo}.\n{t} fechou a {fmt(cl[-1])} ({dias} pregões desde o sinal de {aberta[8:]}/{aberta[5:7]}).")
             database.set_meta(ka, "")
             aberta = ""
+    kv = f"vivo:forma:{t}"
+    if database.get_meta(kv) == hoje_s and not sinal_hoje:      # avisado durante o dia e nao se confirmou no fechamento
+        messenger.send(f"⚪ {t}: o sinal de CALL em formação hoje não se confirmou no fechamento (a linha ou o MACD voltou).")
+        database.set_meta(kv, "")
     if sinal_hoje and not database.get_meta(kc + hoje_s):
         sig = NS(ticker=t, direction="long")
         try:
             opt, err = options_selector.select(api, sig, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        L = [f"🟢 <b>CALL · {t}</b>", "Diário: a linha virou para cima e o MACD cruzou", f"{t} fechou a {fmt(cl[-1])}", ""]
+        conf = database.get_meta(kv) == hoje_s
+        L = [f"🟢 <b>CALL · {t}</b>", "Diário: a linha virou para cima e o MACD cruzou" + (" (confirmado no fechamento)" if conf else ""), f"{t} fechou a {fmt(cl[-1])}", ""]
         if opt:
             L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
                   f"Compra: até ~{fmt(opt['ask'])} (preço do fechamento, confira o ask)", f"Delta {fmt(abs(opt['delta']))} · spread {fmt(opt['spread_pct'], 0)}%"]
@@ -3528,6 +3533,74 @@ def job_gravar_candles(manual=False):
 
 def job_gravar_candles_manual():
     job_gravar_candles(True)
+
+def _candle_hoje_5m(api, t, hoje):
+    """Candle diario de hoje montado com os candles de 5 min (abertura, maxima, minima, ultimo preco). None se ainda nao ha."""
+    h5 = [b for b in api.history(t, "5d", "5m") if datetime.fromtimestamp(b["date"], TZ).date() == hoje]
+    if not h5: return None
+    return dict(date=h5[0]["date"], open=h5[0]["open"], high=max(b["high"] for b in h5), low=min(b["low"] for b in h5), close=h5[-1]["close"], volume=sum(b.get("volume") or 0 for b in h5))
+
+def _vivo_ativo(api, t0, t):
+    """Durante o pregao: roda a regra do diario (SuperTrend 10x3 + MACD 12-26-9) com o candle de hoje ainda aberto. Avisa CALL em formação e, com call aberta, avisa quando o ativo estica no dia (1 ATR diario acima do fechamento de ontem) ou a linha vira para baixo. O fechamento (18:10) confirma ou desfaz."""
+    from messenger import fmt
+    from types import SimpleNamespace as NS
+    hoje = t0.date(); hoje_s = str(hoje)
+    dl = api.history(t, "1y", "1d")
+    dl = [b for b in dl if datetime.fromtimestamp(b["date"], TZ).date() < hoje]
+    if len(dl) < 80: return
+    ch = _candle_hoje_5m(api, t, hoje)
+    if not ch: return
+    dl = dl + [ch]
+    cl = [b["close"] for b in dl]; N = len(dl)
+    di = _supertrend_dir(dl); hi = _macd_hist(cl)
+    sinal = False; ult = -99
+    for i in range(60, N):
+        fl = any(di[k] == 1 and di[k - 1] == -1 for k in range(i - 2, i + 1))
+        cr = any(hi[k] > 0 >= hi[k - 1] for k in range(i - 2, i + 1))
+        nasce = (di[i] == 1 and di[i - 1] == -1) or (hi[i] > 0 >= hi[i - 1])
+        if fl and cr and nasce and i - ult >= 5:
+            ult = i
+            if i == N - 1: sinal = True
+    ka = "bova:aberta" if t == "BOVA11" else f"lm:aberta:{t}"
+    aberta = database.get_meta(ka)
+    kv = f"vivo:forma:{t}"
+    if sinal and database.get_meta(kv) != hoje_s and not aberta:
+        try:
+            opt, err = options_selector.select(api, NS(ticker=t, direction="long"), hoje)
+        except BrapiError as e:
+            opt, err = None, str(e)
+        L = [f"🟡 <b>CALL em formação · {t}</b>", f"Diário com o preço de agora ({fmt(cl[-1])}): a linha virou para cima e o MACD cruzou.", "Entrada em formação com o preço de agora; às 18:10 eu confirmo ou aviso se desfez.", ""]
+        if opt:
+            L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
+                  f"Compra: até ~{fmt(opt['ask'])} (confira o ask)", f"Delta {fmt(abs(opt['delta']))} · spread {fmt(opt['spread_pct'], 0)}%"]
+        else:
+            L += [f"Sem opção líquida no filtro: {err}"]
+        messenger.send("\n".join(L))
+        database.set_meta(kv, hoje_s)
+    if aberta and aberta < hoje_s:
+        ks = f"vivo:saida:{t}:{hoje_s}"
+        atr = _atr_serie(dl)[-2]
+        estica = ch["high"] >= dl[-2]["close"] + 1.0 * atr
+        virou = di[-1] == -1
+        if (estica or virou) and not database.get_meta(ks):
+            motivo = "a linha virou para baixo no dia" if virou else "o ativo esticou no dia (1 ATR diário acima do fechamento de ontem)"
+            messenger.send(f"🔔 <b>{t} · atenção para sair da CALL</b>\nDurante o dia: {motivo}.\n{t} em {fmt(cl[-1])} (máxima de hoje {fmt(ch['high'])}).")
+            database.set_meta(ks, "1")
+
+def job_diario_vivo():
+    """A cada 15 min no pregao: acompanha o diario dos 6 ativos com o candle de hoje aberto (so avisa; o alerta das 18:10 continua igual)."""
+    try:
+        t0 = now(); hh = t0.hour + t0.minute / 60
+        if not (10.3 <= hh <= 17.9): return
+        api = Brapi()
+        for t in LISTA_DIARIA:
+            try:
+                _vivo_ativo(api, t0, t)
+            except Exception as e:
+                log.warning("diario vivo %s: %s", t, e)
+    except Exception:
+        log.exception("diario_vivo falhou")
+
 
 def _idx_sinais_call(di, hi, i_min=60):
     """Indices onde a linha vira para cima e o histograma cruza o zero (janela de 2 candles), com 5 candles de intervalo: mesma regra do alerta diario."""
@@ -4346,6 +4419,7 @@ def serve():
     s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
     s.add_job(_util(job_gravar_candles), "cron", day_of_week=wk, hour=18, minute=20, id="gravar_candles", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_sinais_5m), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="sinais_5m", misfire_grace_time=120, coalesce=True)
+    s.add_job(_util(job_diario_vivo), "cron", day_of_week=wk, hour="10-17", minute="5,20,35,50", id="diario_vivo", misfire_grace_time=300, coalesce=True)
     s.add_job(_util(job_placar_5m), "cron", day_of_week=wk, hour=18, minute=35, id="placar_5m", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar_5m_semanal), "cron", day_of_week="fri", hour=18, minute=40, id="placar_5m_semanal", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_gravar_candles, "date", run_date=now() + timedelta(seconds=90), id="gravar_candles_boot")
