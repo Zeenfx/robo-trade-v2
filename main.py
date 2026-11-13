@@ -3119,6 +3119,87 @@ def _diag_calibra2():
     messenger.send("\n".join(L))
 
 
+
+def _dir_trail(dl, a, k):
+    """Linha propria (tipo HalfTrend): em alta a linha sobe com a menor minima das ultimas 'a' velas e so desce de lado; vira quando o fechamento passa k ATR abaixo dela (e o contrario na baixa)."""
+    N = len(dl)
+    tr = [dl[0]["high"] - dl[0]["low"]] + [max(dl[i]["high"] - dl[i]["low"], abs(dl[i]["high"] - dl[i - 1]["close"]), abs(dl[i]["low"] - dl[i - 1]["close"])) for i in range(1, N)]
+    atr = [0.0] * N
+    for i in range(N):
+        atr[i] = sum(tr[:i + 1]) / (i + 1) if i < 14 else (atr[i - 1] * 13 + tr[i]) / 14
+    d = [1] * N; cur = 1; line = dl[0]["low"]
+    for i in range(1, N):
+        j = max(0, i - a)
+        ll = min(b["low"] for b in dl[j:i]); hh = max(b["high"] for b in dl[j:i])
+        if cur == 1:
+            line = max(line, ll)
+            if dl[i]["close"] < line - k * atr[i - 1]:
+                cur = -1; line = hh
+        else:
+            line = min(line, hh)
+            if dl[i]["close"] > line + k * atr[i - 1]:
+                cur = 1; line = ll
+        d[i] = cur
+    return d
+
+def job_diag_calibra3():
+    try:
+        _diag_calibra3()
+    except Exception as e:
+        log.exception("diag_calibra3 falhou")
+        messenger.send(f"Calibração 3 falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_calibra3():
+    """Comando 'calibra3' (so leitura): linha propria (janela x folga em ATR) contra as 9 marcas do Couto em 12/11."""
+    from messenger import fmt
+    api = Brapi()
+    dados = {}; usado = None
+    for iv_, rg in (("5m", "5d"), ("5m", "1mo"), ("15m", "1mo")):
+        try:
+            tmp = {t: api.history(t, rg, iv_) for t in MARCAS_12_11}
+            if all(len(v) > 100 for v in tmp.values()):
+                dados, usado = tmp, iv_; break
+        except Exception as e:
+            log.warning("calibra3 %s %s: %s", iv_, rg, e)
+    if not dados:
+        messenger.send("Calibração 3: a brapi não entregou candles intradiários."); return
+    tol = 12 if usado == "5m" else 20
+    hm = lambda c: datetime.fromtimestamp(c["date"], TZ)
+    alvo = date(2026, 11, 12)
+    minutos = lambda hhmm: int(hhmm[:2]) * 60 + int(hhmm[3:])
+    def eventos(dl, d):
+        out = []
+        for i in range(1, len(dl)):
+            h = hm(dl[i])
+            if h.date() != alvo: continue
+            m = h.hour * 60 + h.minute
+            if 10 * 60 + 30 <= m <= 17 * 60 + 45 and d[i] != d[i - 1]: out.append((m, d[i]))
+        return out
+    def casa(ev, marcas):
+        usados = set(); ach = 0; erros = []
+        for hhmm, dr in marcas:
+            mm = minutos(hhmm); best = None
+            for k, (m, dd) in enumerate(ev):
+                if dd == dr and k not in usados and abs(m - mm) <= tol and (best is None or abs(m - mm) < abs(ev[best][0] - mm)): best = k
+            if best is not None: usados.add(best); ach += 1; erros.append(abs(ev[best][0] - mm))
+        return ach, len(ev) - len(usados), erros
+    total = sum(len(v) for v in MARCAS_12_11.values())
+    res = []
+    for a in range(2, 13):
+        for k in (0.0, 0.5, 1.0, 1.5, 2.0, 3.0):
+            ach = ext = 0; det = []; er_t = []
+            for t, dl in dados.items():
+                x, e, er = casa(eventos(dl, _dir_trail(dl, a, k)), MARCAS_12_11[t])
+                ach += x; ext += e; er_t += er; det.append(f"{t} {x}/{len(MARCAS_12_11[t])}+{e}")
+            res.append((ach * 2 - ext, a, k, ach, ext, det, (sum(er_t) / len(er_t) if er_t else 0)))
+    res.sort(key=lambda x: (-x[0], x[1]))
+    L = [f"LINHA PRÓPRIA (candles de {usado}, 12/11; {total} marcas, ±{tol} min)", "janela (velas) · folga em ATR: marcas achadas / viradas extras", ""]
+    for sc, a, k, ach, ext, det, er in res[:8]:
+        L.append(f"{a} velas, {fmt(k, 1)} ATR: {ach}/{total} achadas · {ext} extras · erro {fmt(er, 0)} min ({'; '.join(det)})")
+    L += ["", "Só leitura. Com só 9 marcas o ajuste pode ser coincidência; serve de ponto de partida."]
+    messenger.send("\n".join(L))
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3352,7 +3433,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3635,6 +3716,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao 3
+        s.add_job(_once_key("calibra3:2026-11-13", job_diag_calibra3), "date", run_date=now() + timedelta(seconds=150), id="calibra3_once")
     if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao 2
         s.add_job(_once_key("calibra2:2026-11-13", job_diag_calibra2), "date", run_date=now() + timedelta(seconds=150), id="calibra2_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao
