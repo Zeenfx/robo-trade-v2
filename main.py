@@ -3421,6 +3421,89 @@ def _diag_lateral():
     messenger.send("\n".join(L))
 
 
+
+def job_diag_lateral2():
+    try:
+        _diag_lateral2()
+    except Exception as e:
+        log.exception("diag_lateral2 falhou")
+        messenger.send(f"Teste do lateral 2 falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_lateral2():
+    """Comando 'lateral2' (so leitura): robustez do corte por simetria das barras do histograma (limiar, janela, metades do periodo, BOVA11 x acoes, calls x puts)."""
+    from messenger import fmt
+    api = Brapi()
+    dados = {}; usado = None
+    for iv_, rg in (("5m", "1mo"), ("5m", "5d"), ("15m", "1mo")):
+        try:
+            tmp = {}
+            for t in LISTA_DIARIA:
+                h = api.history(t, rg, iv_)
+                if len(h) > 100: tmp[t] = h
+            if tmp:
+                dados, usado = tmp, f"{iv_} / {rg}"; break
+        except Exception as e:
+            log.warning("lateral2 %s %s: %s", iv_, rg, e)
+    if not dados:
+        messenger.send("Teste do lateral 2: a brapi não entregou candles intradiários."); return
+    hm = lambda c: datetime.fromtimestamp(c["date"], TZ)
+    JANELAS = (12, 24, 36); sinais = []
+    for t, dl in dados.items():
+        cl = [b["close"] for b in dl]; N = len(dl)
+        di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14)
+        dias = [hm(b).date() for b in dl]
+        ult = {1: -99, -1: -99}
+        for i in range(60, N - 1):
+            h = hm(dl[i])
+            if not (10 <= h.hour + h.minute / 60 <= 16.5): continue
+            for dr in (1, -1):
+                fl = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+                cr = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+                nasce = (di[i] == dr and di[i - 1] == -dr) or ((hi[i] > 0 >= hi[i - 1]) if dr == 1 else (hi[i] < 0 <= hi[i - 1]))
+                if not (fl and cr and nasce and i - ult[dr] >= 5): continue
+                ult[dr] = i
+                simet = {}
+                for lj in JANELAS:
+                    jan = hi[i - 2 - lj:i - 2]
+                    simet[lj] = abs(sum(1 for x in jan if x > 0) / lj - 0.5)
+                res = {}
+                for modo in ("linha", 2):
+                    k = i + 1; fim = i
+                    while k < N and dias[k] == dias[i]:
+                        fim = k
+                        if di[k] == -dr: break
+                        if modo != "linha" and all((hi[k - j] < hi[k - j - 1]) if dr == 1 else (hi[k - j] > hi[k - j - 1]) for j in range(modo)): break
+                        k += 1
+                    res[modo] = dr * (cl[fim] / cl[i] - 1) * 100
+                sinais.append(dict(simet=simet, linha=res["linha"], b2=res[2], dia=dias[i], g="BOVA11" if t == "BOVA11" else "ações", dr=dr))
+    if len(sinais) < 40:
+        messenger.send(f"Teste do lateral 2: só {len(sinais)} sinais."); return
+    dias_u = sorted({x["dia"] for x in sinais}); metade = dias_u[len(dias_u) // 2]
+    avg = lambda v: sum(v) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 2) + "%"
+    pc = lambda v, f: (fmt(100 * sum(1 for a in v if f(a)) / len(v), 0) + "%") if v else "-"
+    def lin(rot, grp):
+        if len(grp) < 5: return f"{rot}: {len(grp)} sinais (pouco)"
+        a = [x["linha"] for x in grp]; b = [x["b2"] for x in grp]
+        return f"{rot}: {len(grp)} sinais · virada da linha {sg(avg(a))} ({pc(a, lambda v: v > 0)} pos., +0,5%: {pc(a, lambda v: v >= 0.5)}) · 2 barras {sg(avg(b))} ({pc(b, lambda v: v > 0)} pos.)"
+    L = [f"ROBUSTEZ DA SIMETRIA (candles {usado}; {len(sinais)} sinais, {len(dias_u)} pregões)", "Simétrico = nas velas antes do sinal, o histograma ficou perto de metade positivo e metade negativo.", "", "1) Limiar (janela de 24 velas):"]
+    for thr in (0.10, 0.15, 0.20, 0.25):
+        sim = [x for x in sinais if x["simet"][24] <= thr]; nao = [x for x in sinais if x["simet"][24] > thr]
+        L.append(lin(f"  simétrico até {fmt(thr, 2)}", sim)); L.append(lin("    resto", nao))
+    L += ["", "2) Janela (limiar 0,15):"]
+    for lj in JANELAS:
+        L.append(lin(f"  {lj} velas", [x for x in sinais if x["simet"][lj] <= 0.15]))
+    base = [x for x in sinais if x["simet"][24] <= 0.15]
+    L += ["", "3) Só os simétricos (24 velas, 0,15), por recorte:",
+          lin("  1ª metade dos pregões", [x for x in base if x["dia"] < metade]), lin("  2ª metade dos pregões", [x for x in base if x["dia"] >= metade]),
+          lin("  BOVA11", [x for x in base if x["g"] == "BOVA11"]), lin("  ações", [x for x in base if x["g"] == "ações"]),
+          lin("  calls", [x for x in base if x["dr"] == 1]), lin("  puts", [x for x in base if x["dr"] == -1]),
+          "", "Só leitura. Movimento do ativo, sem custo."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3654,7 +3737,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3937,6 +4020,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do lateral 2
+        s.add_job(_once_key("lateral2:2026-11-13", job_diag_lateral2), "date", run_date=now() + timedelta(seconds=150), id="lateral2_once")
     if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico do teste do lateral
         s.add_job(_once_key("lateral:2026-11-13", job_diag_lateral), "date", run_date=now() + timedelta(seconds=150), id="lateral_once")
     if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico do teste intradiario 2
