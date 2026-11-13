@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS shadow_signals(date TEXT, ticker TEXT, direction TEXT
 CREATE TABLE IF NOT EXISTS intraday_stats(ts TEXT, date TEXT, total INTEGER, analisados INTEGER, sem_dado INTEGER, erros INTEGER, sinais INTEGER);
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
 CREATE TABLE IF NOT EXISTS candles_intra(ticker TEXT, tf TEXT, ts INTEGER, o REAL, h REAL, l REAL, c REAL, v REAL, PRIMARY KEY(ticker,tf,ts));
+CREATE TABLE IF NOT EXISTS sinais_intra(id INTEGER PRIMARY KEY AUTOINCREMENT, var TEXT, ticker TEXT, dir INTEGER, ts INTEGER, dia TEXT, preco REAL, simet REAL, res TEXT, UNIQUE(var,ticker,dir,ts));
 """
 
 @contextmanager
@@ -196,3 +197,20 @@ def save_candles(ticker, tf, rows):
 def candles_resumo():
     with conn() as c_:
         return [dict(x) for x in c_.execute("SELECT ticker, tf, COUNT(*) n, MIN(ts) a, MAX(ts) b FROM candles_intra GROUP BY ticker, tf ORDER BY ticker").fetchall()]
+
+
+def save_sinal_intra(var, ticker, dr, ts, dia, preco, simet):
+    """Grava um sinal intradiario de teste (so registro). Retorna True se era novo."""
+    with conn() as c_:
+        cur = c_.execute("INSERT OR IGNORE INTO sinais_intra(var,ticker,dir,ts,dia,preco,simet) VALUES(?,?,?,?,?,?,?)",
+                         (var, ticker, int(dr), int(ts), dia, preco, simet))
+        return cur.rowcount > 0
+
+def sinais_intra(pendentes=False):
+    with conn() as c_:
+        q = "SELECT * FROM sinais_intra" + (" WHERE res IS NULL" if pendentes else "") + " ORDER BY ts"
+        return [dict(x) for x in c_.execute(q).fetchall()]
+
+def set_res_sinal(id_, res_json):
+    with conn() as c_:
+        c_.execute("UPDATE sinais_intra SET res=? WHERE id=?", (res_json, id_))

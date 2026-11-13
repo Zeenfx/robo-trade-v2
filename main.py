@@ -3529,6 +3529,156 @@ def job_gravar_candles(manual=False):
 def job_gravar_candles_manual():
     job_gravar_candles(True)
 
+# ---- Placar de regras intradiarias de 5 min (so registro e medicao: nao envia alerta de entrada) ----
+VARIANTES_5M = {"A": "linha + MACD cruzando o zero", "B": "A com barras do histograma simétricas antes (compressão)", "C": "reentrada: tendência de pé, histograma crescendo e recuo de 0,5 ATR"}
+
+def _atr_serie(dl):
+    N = len(dl)
+    tr = [dl[0]["high"] - dl[0]["low"]] + [max(dl[i]["high"] - dl[i]["low"], abs(dl[i]["high"] - dl[i - 1]["close"]), abs(dl[i]["low"] - dl[i - 1]["close"])) for i in range(1, N)]
+    atr = [0.0] * N
+    for i in range(N):
+        atr[i] = sum(tr[:i + 1]) / (i + 1) if i < 14 else (atr[i - 1] * 13 + tr[i]) / 14
+    return atr
+
+def _sinais_5m(dl, i_min=60):
+    """Lista (variante, direcao, i, simetria) para todos os candles i >= i_min. Linha propria (6 velas, 0,5 ATR) + MACD 14-34-14. Entre 10:30 e 16:30."""
+    N = len(dl)
+    if N < i_min + 5: return []
+    cl = [b["close"] for b in dl]
+    di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14); atr = _atr_serie(dl)
+    hm = [datetime.fromtimestamp(b["date"], TZ) for b in dl]
+    LJ = 24; out = []
+    ult = {("A", 1): -99, ("A", -1): -99, ("C", 1): -99, ("C", -1): -99}
+    for i in range(i_min, N):
+        h = hm[i].hour + hm[i].minute / 60
+        if not (10.5 <= h <= 16.5): continue
+        for dr in (1, -1):
+            fl = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
+            cr = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
+            nasce = (di[i] == dr and di[i - 1] == -dr) or ((hi[i] > 0 >= hi[i - 1]) if dr == 1 else (hi[i] < 0 <= hi[i - 1]))
+            if fl and cr and nasce and i - ult[("A", dr)] >= 5:
+                ult[("A", dr)] = i
+                jan = hi[i - 2 - LJ:i - 2]
+                simet = abs(sum(1 for x in jan if x > 0) / LJ - 0.5)
+                out.append(("A", dr, i, simet))
+                if simet <= 0.15: out.append(("B", dr, i, simet))
+            # C: tendencia de pe, histograma do lado certo crescendo por 3 barras, recuo de 0,5 ATR da extrema das ultimas 12 velas (mesmo dia)
+            if i >= 12 and di[i] == dr and dr * hi[i] > 0 and dr * (hi[i] - hi[i - 1]) > 0 and dr * (hi[i - 1] - hi[i - 2]) > 0 and i - ult[("C", dr)] >= 12:
+                jan12 = dl[i - 12:i]
+                if all(hm[k].date() == hm[i].date() for k in (i - 12, i)):
+                    ref = max(b["high"] for b in jan12) if dr == 1 else min(b["low"] for b in jan12)
+                    if dr * (ref - cl[i]) >= 0.5 * atr[i]:
+                        ult[("C", dr)] = i
+                        out.append(("C", dr, i, 0.0))
+    return out
+
+def job_sinais_5m():
+    """A cada 5 min no pregao: grava os sinais novos das regras de teste (candle ja fechado). So registro, sem alerta."""
+    try:
+        t0 = now()
+        hh = t0.hour + t0.minute / 60
+        if not (10.5 <= hh <= 17.2): return
+        api = Brapi(); novos = 0
+        for t in LISTA_DIARIA:
+            try:
+                dl = api.history(t, "5d", "5m")
+                if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]      # candle ainda formando
+                N = len(dl)
+                for var, dr, i, simet in _sinais_5m(dl):
+                    if i >= N - 3:   # os 3 ultimos fechados (cobre atraso da brapi); a chave unica evita duplicar
+                        dia = datetime.fromtimestamp(dl[i]["date"], TZ).strftime("%Y-%m-%d")
+                        if database.save_sinal_intra(var, t, dr, dl[i]["date"], dia, dl[i]["close"], simet): novos += 1
+            except Exception as e:
+                log.warning("sinais_5m %s: %s", t, e)
+        if novos: log.info("Sinais 5m gravados: %d", novos)
+    except Exception:
+        log.exception("sinais_5m falhou")
+
+def _avalia_sinal(dl, daily, s):
+    """Mede um sinal gravado: pico a favor, saida na virada da linha, saida com 2 barras encolhendo (ou fim do dia) e opcao estimada (BS, ATM, 35 dias, 5% de custo por lado)."""
+    import opcao_teste as ot
+    idx = next((k for k, b in enumerate(dl) if b["date"] == s["ts"]), None)
+    if idx is None: return {"sem_dado": 1}
+    cl = [b["close"] for b in dl]; dr = s["dir"]
+    di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14)
+    dia = lambda k: datetime.fromtimestamp(dl[k]["date"], TZ).date()
+    N = len(dl); d0 = dia(idx)
+    k = idx + 1; fim_l = fim_h = idx; pico = 0.0; aberto_l = aberto_h = True
+    while k < N and dia(k) == d0:
+        fav = (dl[k]["high"] / cl[idx] - 1) * 100 if dr == 1 else (1 - dl[k]["low"] / cl[idx]) * 100
+        pico = max(pico, fav)
+        if aberto_l:
+            fim_l = k
+            if di[k] == -dr: aberto_l = False
+        if aberto_h:
+            fim_h = k
+            if di[k] == -dr or all((hi[k - j] < hi[k - j - 1]) if dr == 1 else (hi[k - j] > hi[k - j - 1]) for j in range(2)): aberto_h = False
+        k += 1
+    pct = lambda f: dr * (cl[f] / cl[idx] - 1) * 100
+    S0 = cl[idx]; call = dr == 1; v = ot.sigma_hist(daily, d0)
+    K = ot.strike_por_delta(call, S0, 35 / 365.0, v, 0.5)
+    P0 = ot.valor(call, S0, K, 35, v)
+    opc = lambda S1: (ot.valor(call, S1, K, 35, v) * 0.95 / (P0 * 1.05) - 1) * 100 if P0 > 0.01 else None
+    S_pico = S0 * (1 + dr * pico / 100)
+    return {"pico": pico, "linha": pct(fim_l), "h2": pct(fim_h), "opc_h2": opc(cl[fim_h]), "opc_pico": opc(S_pico)}
+
+def _roda_avaliacao():
+    pend = [s for s in database.sinais_intra(True) if s["dia"] <= str(now().date())]
+    if not pend: return 0
+    api = Brapi(); cache = {}; n = 0
+    for s in pend:
+        t = s["ticker"]
+        if t not in cache:
+            try: cache[t] = (api.history(t, "5d", "5m"), api.history(t, "3mo", "1d"))
+            except Exception as e:
+                log.warning("avaliacao %s: %s", t, e); cache[t] = None
+        if not cache[t]: continue
+        dl, daily = cache[t]
+        if s["dia"] == str(now().date()) and now().hour < 18: continue   # dia ainda aberto
+        try:
+            database.set_res_sinal(s["id"], json.dumps(_avalia_sinal(dl, daily, s))); n += 1
+        except Exception as e:
+            log.warning("avalia %s: %s", t, e)
+    return n
+
+def _placar_5m_texto(desde=None):
+    from messenger import fmt
+    L = ["PLACAR DAS REGRAS DE 5 MIN (só registro; nenhum alerta de entrada)", "Opção = estimativa BS, ATM, 35 dias, 5% de custo por lado.", ""]
+    todos = [s for s in database.sinais_intra() if (desde is None or s["dia"] >= desde)]
+    pend = sum(1 for s in todos if not s["res"])
+    for var, nome in VARIANTES_5M.items():
+        av = [(s, json.loads(s["res"])) for s in todos if s["var"] == var and s["res"]]
+        av = [(s, r) for s, r in av if not r.get("sem_dado")]
+        if not av:
+            L.append(f"{var} ({nome}): sem sinais medidos ainda"); continue
+        n = len(av); pc = lambda f: fmt(100 * sum(1 for s, r in av if f(r)) / n, 0) + "%"
+        mh = sum(r["h2"] for s, r in av) / n
+        mo = [r["opc_h2"] for s, r in av if r["opc_h2"] is not None]
+        L.append(f"{var} ({nome}): {n} sinais")
+        L.append(f"  ativo, saída pelo histograma: média {'+' if mh >= 0 else '−'}{fmt(abs(mh), 2)}% · acima de +0,5%: {pc(lambda r: r['h2'] >= 0.5)} · pico a favor acima de +0,5%: {pc(lambda r: r['pico'] >= 0.5)}")
+        L.append(f"  opção: pico acima de +20%: {pc(lambda r: (r['opc_pico'] or 0) >= 20)} · saída positiva: {fmt(100 * sum(1 for x in mo if x > 0) / max(len(mo), 1), 0)}%")
+        bo = [r["h2"] for s, r in av if s["ticker"] == "BOVA11"]
+        if bo: L.append(f"  BOVA11: {len(bo)} sinais, acima de +0,5%: {fmt(100 * sum(1 for x in bo if x >= 0.5) / len(bo), 0)}%")
+    if pend: L.append(f"\n{pend} sinais ainda sem medir (dia aberto ou sem dado).")
+    if not todos: L.append("Ainda não há sinais gravados.")
+    return "\n".join(L)
+
+def job_placar_5m(manual=False, semanal=False):
+    try:
+        _roda_avaliacao()
+        if manual or semanal:
+            messenger.send(_placar_5m_texto())
+    except Exception as e:
+        log.exception("placar_5m falhou")
+        messenger.send(f"Placar 5 min falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def job_placar_5m_manual():
+    job_placar_5m(True)
+
+def job_placar_5m_semanal():
+    job_placar_5m(False, True)
+
+
 
 def job_diag_setores():
     try:
@@ -3763,7 +3913,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3997,6 +4147,9 @@ def serve():
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
     s.add_job(_util(job_gravar_candles), "cron", day_of_week=wk, hour=18, minute=20, id="gravar_candles", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_sinais_5m), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="sinais_5m", misfire_grace_time=120, coalesce=True)
+    s.add_job(_util(job_placar_5m), "cron", day_of_week=wk, hour=18, minute=35, id="placar_5m", misfire_grace_time=3600, coalesce=True)
+    s.add_job(_util(job_placar_5m_semanal), "cron", day_of_week="fri", hour=18, minute=40, id="placar_5m_semanal", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_gravar_candles, "date", run_date=now() + timedelta(seconds=90), id="gravar_candles_boot")
     s.add_job(_util(job_bova_diario), "cron", day_of_week=wk, hour=18, minute=10, id="bova_diario", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=45, id="placar", misfire_grace_time=3600, coalesce=True)
