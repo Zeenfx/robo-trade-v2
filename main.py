@@ -2994,6 +2994,107 @@ def _diag_calibra():
     messenger.send("\n".join(L))
 
 
+
+def _dir_donchian(dl, n):
+    d = [1] * len(dl); cur = 1
+    for i in range(len(dl)):
+        if i >= n:
+            hh = max(b["high"] for b in dl[i - n:i]); ll = min(b["low"] for b in dl[i - n:i])
+            if dl[i]["close"] > hh: cur = 1
+            elif dl[i]["close"] < ll: cur = -1
+        d[i] = cur
+    return d
+
+def _dir_hilo(dl, n):
+    d = [1] * len(dl); cur = 1
+    for i in range(len(dl)):
+        if i >= n:
+            hi = sum(b["high"] for b in dl[i - n:i]) / n; lo = sum(b["low"] for b in dl[i - n:i]) / n
+            if dl[i]["close"] > hi: cur = 1
+            elif dl[i]["close"] < lo: cur = -1
+        d[i] = cur
+    return d
+
+def _dir_chandelier(dl, n, k):
+    N = len(dl)
+    tr = [dl[0]["high"] - dl[0]["low"]] + [max(dl[i]["high"] - dl[i]["low"], abs(dl[i]["high"] - dl[i - 1]["close"]), abs(dl[i]["low"] - dl[i - 1]["close"])) for i in range(1, N)]
+    atr = [0.0] * N
+    for i in range(N):
+        atr[i] = sum(tr[:i + 1]) / (i + 1) if i < n else (atr[i - 1] * (n - 1) + tr[i]) / n
+    d = [1] * N; cur = 1
+    for i in range(N):
+        if i > n:
+            j = i - 1
+            ls = max(b["high"] for b in dl[j - n + 1:j + 1]) - k * atr[j]
+            ss = min(b["low"] for b in dl[j - n + 1:j + 1]) + k * atr[j]
+            if cur == 1 and dl[i]["close"] < ls: cur = -1
+            elif cur == -1 and dl[i]["close"] > ss: cur = 1
+        d[i] = cur
+    return d
+
+def job_diag_calibra2():
+    try:
+        _diag_calibra2()
+    except Exception as e:
+        log.exception("diag_calibra2 falhou")
+        messenger.send(f"Calibração 2 falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_calibra2():
+    """Comando 'calibra2' (so leitura): outras familias de linha de tendencia (Donchian, HiLo, Chandelier, SuperTrend com fatores altos) contra as 9 marcas do Couto em 12/11."""
+    from messenger import fmt
+    api = Brapi()
+    dados = {}; usado = None
+    for iv_, rg in (("5m", "5d"), ("5m", "1mo"), ("15m", "1mo")):
+        try:
+            tmp = {t: api.history(t, rg, iv_) for t in MARCAS_12_11}
+            if all(len(v) > 100 for v in tmp.values()):
+                dados, usado = tmp, iv_; break
+        except Exception as e:
+            log.warning("calibra2 %s %s: %s", iv_, rg, e)
+    if not dados:
+        messenger.send("Calibração 2: a brapi não entregou candles intradiários."); return
+    tol = 12 if usado == "5m" else 20
+    hm = lambda c: datetime.fromtimestamp(c["date"], TZ)
+    alvo = date(2026, 11, 12)
+    minutos = lambda hhmm: int(hhmm[:2]) * 60 + int(hhmm[3:])
+    def eventos(dl, d):
+        out = []
+        for i in range(1, len(dl)):
+            h = hm(dl[i])
+            if h.date() != alvo: continue
+            m = h.hour * 60 + h.minute
+            if 10 * 60 + 30 <= m <= 17 * 60 + 45 and d[i] != d[i - 1]: out.append((m, d[i]))
+        return out
+    def casa(ev, marcas):
+        usados = set(); ach = 0; erros = []
+        for hhmm, dr in marcas:
+            mm = minutos(hhmm); best = None
+            for k, (m, dd) in enumerate(ev):
+                if dd == dr and k not in usados and abs(m - mm) <= tol and (best is None or abs(m - mm) < abs(ev[best][0] - mm)): best = k
+            if best is not None: usados.add(best); ach += 1; erros.append(abs(ev[best][0] - mm))
+        return ach, len(ev) - len(usados), erros
+    total = sum(len(v) for v in MARCAS_12_11.values())
+    cand = []
+    for n in (10, 14, 20, 34, 50): cand.append((f"Donchian {n}", lambda dl, n=n: _dir_donchian(dl, n)))
+    for n in (10, 14, 20, 34, 50): cand.append((f"HiLo {n}", lambda dl, n=n: _dir_hilo(dl, n)))
+    for n in (14, 22, 34):
+        for k in (1.5, 2.0, 3.0): cand.append((f"Chandelier {n} x{fmt(k, 1)}", lambda dl, n=n, k=k: _dir_chandelier(dl, n, k)))
+    for mult in (4.0, 5.0, 6.0): cand.append((f"SuperTrend 34 x{fmt(mult, 1)}", lambda dl, m=mult: _supertrend_dir(dl, 34, m)))
+    res = []
+    for nome, fn in cand:
+        ach = ext = 0; det = []; erro_tot = []
+        for t, dl in dados.items():
+            a, e, er = casa(eventos(dl, fn(dl)), MARCAS_12_11[t])
+            ach += a; ext += e; erro_tot += er; det.append(f"{t} {a}/{len(MARCAS_12_11[t])}+{e}")
+        res.append((ach * 2 - ext, nome, ach, ext, det, (sum(erro_tot) / len(erro_tot) if erro_tot else 0)))
+    res.sort(key=lambda x: -x[0])
+    L = [f"CALIBRAÇÃO 2 (candles de {usado}, 12/11; {total} marcas, tolerância ±{tol} min)", "Marcas achadas / viradas extras (viradas que o seu gráfico não mostra)", ""]
+    for sc, nome, ach, ext, det, er in res[:8]:
+        L.append(f"{nome}: {ach}/{total} achadas · {ext} extras · erro médio {fmt(er, 0)} min ({'; '.join(det)})")
+    L += ["", "Só leitura. Horários das marcas aproximados."]
+    messenger.send("\n".join(L))
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3227,7 +3328,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3510,6 +3611,8 @@ def serve():
         s.add_job(_once_key("macd:2026-11-12", job_diag_macd), "date", run_date=now() + timedelta(seconds=150), id="macd_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da validacao do MACD
         s.add_job(_once_key("macdvalida:2026-11-12", job_diag_macd_valida), "date", run_date=now() + timedelta(seconds=150), id="macdvalida_once")
+    if date(2026, 11, 13) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao 2
+        s.add_job(_once_key("calibra2:2026-11-13", job_diag_calibra2), "date", run_date=now() + timedelta(seconds=150), id="calibra2_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico da calibracao
         s.add_job(_once_key("calibra:2026-11-12", job_diag_calibra), "date", run_date=now() + timedelta(seconds=240), id="calibra_once")
     if date(2026, 11, 12) <= now().date() <= date(2026, 11, 14):   # envio unico do teste intradiario
