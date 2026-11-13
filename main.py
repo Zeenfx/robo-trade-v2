@@ -4006,7 +4006,7 @@ def _tickers_5m():
     """BOVA11 + 5 acoes do diario + todos os ativos do robo (sem repetir)."""
     return list(dict.fromkeys(list(LISTA_DIARIA) + list(config.UNIVERSE)))
 
-VARIANTES_5M = {"A": "linha + MACD cruzando o zero", "B": "A com barras do histograma simétricas antes (compressão)", "C": "reentrada: tendência de pé, histograma crescendo e recuo de 0,5 ATR", "D": "linha vira e o histograma já está do lado do sinal (sem cruzar), não encolhe"}
+VARIANTES_5M = {"A": "linha + MACD cruzando o zero", "B": "A com barras do histograma simétricas antes (compressão)", "C": "reentrada: tendência de pé, histograma crescendo e recuo de 0,5 ATR", "D": "linha vira e o histograma já está do lado do sinal (sem cruzar), não encolhe", "E": "continuação: linha e histograma já do lado do sinal, histograma crescendo e nova mínima/máxima do dia"}
 
 def _atr_serie(dl):
     N = len(dl)
@@ -4024,7 +4024,7 @@ def _sinais_5m(dl, i_min=60):
     di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14); atr = _atr_serie(dl)
     hm = [datetime.fromtimestamp(b["date"], TZ) for b in dl]
     LJ = 24; out = []
-    ult = {("A", 1): -99, ("A", -1): -99, ("C", 1): -99, ("C", -1): -99, ("D", 1): -99, ("D", -1): -99}
+    ult = {("A", 1): -99, ("A", -1): -99, ("C", 1): -99, ("C", -1): -99, ("D", 1): -99, ("D", -1): -99, ("E", 1): -99, ("E", -1): -99}
     for i in range(i_min, N):
         h = hm[i].hour + hm[i].minute / 60
         if not (10.05 <= h <= 16.5): continue
@@ -4033,6 +4033,14 @@ def _sinais_5m(dl, i_min=60):
             if any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1)) and di[i] == dr and dr * hi[i] > 0 and dr * (hi[i] - hi[i - 1]) >= 0 and i - ult[("D", dr)] >= 5:
                 ult[("D", dr)] = i
                 out.append(("D", dr, i, 0.0))
+            # E: continuacao (a linha ja estava do lado do sinal): histograma do lado certo e crescendo por 2 barras, nova minima (venda) ou maxima (compra) do dia; 1 sinal a cada 30 min
+            k0 = i
+            while k0 > 0 and hm[k0 - 1].date() == hm[i].date(): k0 -= 1
+            if i - k0 >= 3 and di[i] == dr and dr * hi[i] > 0 and dr * (hi[i] - hi[i - 1]) > 0 and dr * (hi[i - 1] - hi[i - 2]) > 0 and i - ult[("E", dr)] >= 6:
+                ext = (cl[i] < min(b["low"] for b in dl[k0:i])) if dr == -1 else (cl[i] > max(b["high"] for b in dl[k0:i]))
+                if ext:
+                    ult[("E", dr)] = i
+                    out.append(("E", dr, i, 0.0))
             if h < 10.5: continue
             fl = any(di[k] == dr and di[k - 1] == -dr for k in range(i - 2, i + 1))
             cr = any((hi[k] > 0 >= hi[k - 1]) if dr == 1 else (hi[k] < 0 <= hi[k - 1]) for k in range(i - 2, i + 1))
