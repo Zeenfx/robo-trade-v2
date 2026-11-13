@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS iv_nodata_v2(ticker TEXT, date TEXT, PRIMARY KEY(tick
 CREATE TABLE IF NOT EXISTS shadow_signals(date TEXT, ticker TEXT, direction TEXT, ts TEXT, iv REAL, iv_rank REAL, iv_pct REAL, rule_a INTEGER, rule_b INTEGER, rule_c INTEGER, payload TEXT, PRIMARY KEY(date,ticker,direction));
 CREATE TABLE IF NOT EXISTS intraday_stats(ts TEXT, date TEXT, total INTEGER, analisados INTEGER, sem_dado INTEGER, erros INTEGER, sinais INTEGER);
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
+CREATE TABLE IF NOT EXISTS candles_intra(ticker TEXT, tf TEXT, ts INTEGER, o REAL, h REAL, l REAL, c REAL, v REAL, PRIMARY KEY(ticker,tf,ts));
 """
 
 @contextmanager
@@ -180,3 +181,18 @@ def mercado_bloq_signals(date):
     with conn() as c_:
         rows = c_.execute("SELECT ticker, direction, payload FROM alerts WHERE date=? ORDER BY ts", (date,)).fetchall()
     return [(r["ticker"], r["direction"]) for r in rows if json.loads(r["payload"]).get("bloq_mercado")]
+
+
+def save_candles(ticker, tf, rows):
+    """Guarda candles intradiarios (INSERT OR IGNORE: pode rodar varias vezes sem duplicar). Retorna quantos eram novos."""
+    n = 0
+    with conn() as c_:
+        for r in rows:
+            cur = c_.execute("INSERT OR IGNORE INTO candles_intra VALUES(?,?,?,?,?,?,?,?)",
+                             (ticker, tf, int(r["date"]), r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")))
+            n += cur.rowcount
+    return n
+
+def candles_resumo():
+    with conn() as c_:
+        return [dict(x) for x in c_.execute("SELECT ticker, tf, COUNT(*) n, MIN(ts) a, MAX(ts) b FROM candles_intra GROUP BY ticker, tf ORDER BY ticker").fetchall()]

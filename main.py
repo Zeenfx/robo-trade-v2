@@ -3504,6 +3504,32 @@ def _diag_lateral2():
         messenger.send(txt[i:i + 3800])
 
 
+
+def job_gravar_candles(manual=False):
+    """Guarda todo dia os candles de 5 min do BOVA11 e das 5 acoes (a brapi so entrega ~7 dias; assim o historico cresce). Nao altera nenhum alerta."""
+    try:
+        api = Brapi(); novos = 0; erros = []
+        for t in LISTA_DIARIA:
+            try:
+                novos += database.save_candles(t, "5m", api.history(t, "5d", "5m"))
+            except Exception as e:
+                erros.append(f"{t}: {str(e)[:60]}")
+        log.info("Candles de 5 min guardados: %d novos, %d erros", novos, len(erros))
+        if manual:
+            from datetime import datetime as _dt
+            res = database.candles_resumo()
+            L = [f"Candles de 5 min guardados hoje: {novos} novos."] + [f"{r['ticker']}: {r['n']} candles, de {_dt.fromtimestamp(r['a'], TZ).strftime('%d/%m')} a {_dt.fromtimestamp(r['b'], TZ).strftime('%d/%m')}" for r in res]
+            if erros: L.append("Erros: " + "; ".join(erros))
+            messenger.send("\n".join(L))
+        elif erros:
+            log.warning("Candles com erro: %s", "; ".join(erros))
+    except Exception:
+        log.exception("gravar_candles falhou")
+
+def job_gravar_candles_manual():
+    job_gravar_candles(True)
+
+
 def job_diag_setores():
     try:
         _diag_setores()
@@ -3737,7 +3763,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -3948,6 +3974,8 @@ def serve():
     # na subida, recalcula a watchlist com a regra vigente (assim a mudanca vale no mesmo dia, sem esperar o EOD das 08:30)
     s.add_job(job_eod, "date", run_date=now() + timedelta(seconds=90), id="eod_boot")
     s.add_job(_util(job_posicoes), "cron", day_of_week=wk, hour="10-17", minute="*/5", id="posicoes", max_instances=1, coalesce=True)
+    s.add_job(_util(job_gravar_candles), "cron", day_of_week=wk, hour=18, minute=20, id="gravar_candles", misfire_grace_time=3600, coalesce=True)
+    s.add_job(job_gravar_candles, "date", run_date=now() + timedelta(seconds=90), id="gravar_candles_boot")
     s.add_job(_util(job_bova_diario), "cron", day_of_week=wk, hour=18, minute=10, id="bova_diario", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=45, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo
