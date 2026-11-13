@@ -4135,15 +4135,23 @@ def _placar_5m_texto(desde=None):
     L = ["PLACAR DAS REGRAS DE 5 MIN (só registro; nenhum alerta de entrada)", "Opção = estimativa BS, ATM, 35 dias, 5% de custo por lado.", ""]
     todos = [s for s in database.sinais_intra() if (desde is None or s["dia"] >= desde)]
     pend = sum(1 for s in todos if not s["res"])
-    for var, nome in VARIANTES_5M.items():
-        av = [(s, json.loads(s["res"])) for s in todos if s["var"] == var and s["res"]]
+    hora = lambda s: (lambda d: d.hour + d.minute / 60)(datetime.fromtimestamp(s["ts"], TZ))
+    # E1 = primeiro sinal E de cada ativo no dia, ate 12:00 (o recorte que viraria alerta)
+    primeiros = {}
+    for s in sorted((x for x in todos if x["var"] == "E" and hora(x) <= 12.0), key=lambda x: x["ts"]):
+        primeiros.setdefault((s["ticker"], s["dia"]), s["id"])
+    ids_e1 = set(primeiros.values())
+    grupos = [(v, f"{v} ({nome})", (lambda s, v=v: s["var"] == v)) for v, nome in VARIANTES_5M.items()]
+    grupos.append(("E1", "E1 (primeiro E do dia por ativo, até 12:00)", lambda s: s["id"] in ids_e1))
+    for var, titulo, filtro in grupos:
+        av = [(s, json.loads(s["res"])) for s in todos if filtro(s) and s["res"]]
         av = [(s, r) for s, r in av if not r.get("sem_dado")]
         if not av:
-            L.append(f"{var} ({nome}): sem sinais medidos ainda"); continue
+            L.append(f"{titulo}: sem sinais medidos ainda"); continue
         n = len(av); pc = lambda f: fmt(100 * sum(1 for s, r in av if f(r)) / n, 0) + "%"
         mh = sum(r["h2"] for s, r in av) / n
         mo = [r["opc_h2"] for s, r in av if r["opc_h2"] is not None]
-        L.append(f"{var} ({nome}): {n} sinais")
+        L.append(f"{titulo}: {n} sinais")
         L.append(f"  ativo, saída pelo histograma: média {'+' if mh >= 0 else '−'}{fmt(abs(mh), 2)}% · acima de +0,5%: {pc(lambda r: r['h2'] >= 0.5)} · pico a favor acima de +0,5%: {pc(lambda r: r['pico'] >= 0.5)}")
         L.append(f"  opção: pico acima de +20%: {pc(lambda r: (r['opc_pico'] or 0) >= 20)} · saída positiva: {fmt(100 * sum(1 for x in mo if x > 0) / max(len(mo), 1), 0)}%")
         bo = [r["h2"] for s, r in av if s["ticker"] == "BOVA11"]
