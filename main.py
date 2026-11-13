@@ -3895,6 +3895,87 @@ def _diag_puts():
     messenger.send("\n".join(L))
 
 
+def job_diag_puts_filtro():
+    try:
+        _diag_puts_filtro()
+    except Exception as e:
+        log.exception("diag_puts_filtro falhou")
+        messenger.send(f"Teste do filtro de puts falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_puts_filtro():
+    """Comando 'putsfiltro' (so leitura): o put so valeria se o diario tambem apontasse para baixo (SuperTrend 10x3 em baixa e histograma do MACD abaixo de zero no fechamento anterior). Parte 1: os puts ja resolvidos do placar, quantos passariam e como terminaram. Parte 2: 5 anos, put em qualquer dia com e sem esse estado, opcao estimada (BS, ATM, 45 dias, 5% de custo por lado) apos 10 pregoes."""
+    import opcao_teste as ot
+    from messenger import fmt
+    api = Brapi()
+    avg = lambda v: sum(v) / len(v) if v else 0.0
+    pos = lambda v: 100 * sum(1 for x in v if x > 0) / len(v) if v else 0.0
+    sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 1) + "%"
+    L = ["FILTRO DO DIÁRIO NOS PUTS (só leitura)", "Passa = linha em baixa e MACD abaixo de zero no fechamento anterior ao alerta.", ""]
+    # parte 1: alertas reais
+    with database.conn() as c:
+        try:
+            out = [dict(r) for r in c.execute("SELECT date,ticker,direction,result,days,move_pct FROM outcomes WHERE direction='short' ORDER BY date").fetchall()]
+        except Exception:
+            out = []
+    try:
+        bq = outcomes._bloqueados()
+    except Exception:
+        bq = set()
+    out = [r for r in out if (r["date"], r["ticker"], r["direction"]) not in bq]
+    cache = {}; lin = []
+    for r in out:
+        t = r["ticker"]
+        if t not in cache:
+            try: cache[t] = api.history(t, "1y", "1d")
+            except Exception as e:
+                log.warning("putsfiltro %s: %s", t, e); cache[t] = []
+        dl = cache[t]
+        ate = [b for b in dl if datetime.fromtimestamp(b["date"], TZ).date().isoformat() < r["date"]]
+        if len(ate) < 60:
+            r["f"] = None; continue
+        di = _supertrend_dir(ate); hi = _macd_hist([b["close"] for b in ate])
+        r["linha"] = di[-1] == -1; r["macd"] = hi[-1] < 0
+        r["f"] = r["linha"] and r["macd"]
+    ok = [r for r in out if r.get("f") is not None]
+    passa = [r for r in ok if r["f"]]; corta = [r for r in ok if not r["f"]]
+    def resumo(x):
+        if not x: return "nenhum"
+        return f"{len(x)} · alvo {sum(1 for r in x if r['result'] == 'alvo')} · saída {sum(1 for r in x if r['result'] == 'saida')} · ação a favor {sum(1 for r in x if r['move_pct'] > 0)} de {len(x)}"
+    L += [f"1) PUTS JÁ RESOLVIDOS ({len(out)}; {len(ok)} com diário disponível)", f"  passariam: {resumo(passa)}", f"  seriam cortados: {resumo(corta)}", ""]
+    for r in ok:
+        L.append(f"  {'✔' if r['f'] else '✘'} {r['ticker']} {r['date'][8:10]}/{r['date'][5:7]} · linha {'baixa' if r['linha'] else 'alta'} · MACD {'neg' if r['macd'] else 'pos'} · {r['result']} · ação {sg(r['move_pct'])}")
+    # parte 2: 5 anos
+    res = {"seis": {"s": [], "n": []}, "outros": {"s": [], "n": []}}; usado = None
+    for t in list(dict.fromkeys(list(LISTA_DIARIA) + list(config.UNIVERSE))):
+        dl = []
+        for rg in ("5y", "3y", "2y"):
+            try:
+                dl = api.history(t, rg, "1d")
+            except Exception as e:
+                log.warning("putsfiltro %s %s: %s", t, rg, e); continue
+            if len(dl) > 200: usado = usado or rg; break
+        if len(dl) < 200: continue
+        N = len(dl); cl = [b["close"] for b in dl]; hi = _macd_hist(cl); di = _supertrend_dir(dl)
+        g = "seis" if t in LISTA_DIARIA else "outros"
+        for i in range(60, N - 11, 5):
+            S0 = cl[i]; dia0 = datetime.fromtimestamp(dl[i]["date"], TZ).date()
+            v = ot.sigma_hist(dl[:i + 1], dia0)
+            K = ot.strike_por_delta(False, S0, 45 / 365.0, v, 0.5); P0 = ot.valor(False, S0, K, 45, v)
+            if P0 <= 0.01: continue
+            o10 = (ot.valor(False, cl[i + 10], K, max(45 - round(10 * 7 / 5), 1), v) * 0.95 / (P0 * 1.05) - 1) * 100
+            a10 = -(cl[i + 10] / S0 - 1) * 100
+            res[g]["s" if (di[i] == -1 and hi[i] < 0) else "n"].append((a10, o10))
+    L += ["", f"2) PUT EM QUALQUER DIA, 1 a cada 5 pregões (histórico {usado or '?'}). Célula: média (% positivas), 10 pregões."]
+    for g, nm in (("seis", "6 principais"), ("outros", "outros ativos")):
+        for k, lab in (("s", "com diário em baixa"), ("n", "sem")):
+            x = res[g][k]
+            if x: L.append(f"  {nm} · {lab}: {len(x)} · ação {sg(avg([a for a, _ in x]))} ({fmt(pos([a for a, _ in x]), 0)}%) · opção {sg(avg([o for _, o in x]))} ({fmt(pos([o for _, o in x]), 0)}%)")
+    L += ["", "Só leitura. Parte 1 é amostra pequena; parte 2 mede o estado do diário, não a regra de rompimento."]
+    txt = "\n".join(L)
+    for i in range(0, len(txt), 3800):
+        messenger.send(txt[i:i + 3800])
+
+
 def job_diag_candles_opcao():
     try:
         _diag_candles_opcao()
@@ -4414,7 +4495,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
