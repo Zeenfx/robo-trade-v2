@@ -157,7 +157,7 @@ def count_alerts(date, only_sent=False):
     """Sinais do dia; com only_sent=True, so os que tinham opcao (os que viraram mensagem)."""
     with conn() as c_:
         n = c_.execute("SELECT COUNT(*) n FROM alerts WHERE date=?", (date,)).fetchone()["n"]
-    return n - len(no_option_signals(date)) - len(ruim_signals(date)) - len(mercado_bloq_signals(date)) if only_sent else n
+    return n - len(no_option_signals(date)) - len(ruim_signals(date)) - len(mercado_bloq_signals(date)) - len(pausados_signals(date)) if only_sent else n
 
 def ruim_signals(date):
     """[(ticker, direcao)] dos sinais do dia com opcao mas veredito RUIM (nao enviados)."""
@@ -182,6 +182,13 @@ def mercado_bloq_signals(date):
     with conn() as c_:
         rows = c_.execute("SELECT ticker, direction, payload FROM alerts WHERE date=? ORDER BY ts", (date,)).fetchall()
     return [(r["ticker"], r["direction"]) for r in rows if json.loads(r["payload"]).get("bloq_mercado")]
+
+
+def pausados_signals(date):
+    """[(ticker, direcao)] dos puts com opcao boa que ficaram so registrados porque o envio de put esta pausado."""
+    with conn() as c_:
+        rows = c_.execute("SELECT ticker, direction, payload FROM alerts WHERE date=? ORDER BY ts", (date,)).fetchall()
+    return [(r["ticker"], r["direction"]) for r in rows if json.loads(r["payload"]).get("pausado")]
 
 
 def save_candles(ticker, tf, rows):

@@ -123,7 +123,7 @@ def job_intraday():
             opt, err = options_selector.select(api, s, t0.date())
         except BrapiError as e:
             opt, err = None, str(e)
-        ruim, bloq = False, False
+        ruim, bloq, pausado = False, False, False
         mv = _mercado_no_sentido(bov, s.direction)
         if opt:   # sem opcao liquida, com veredito RUIM ou com o mercado no mesmo sentido nao vira alerta: fica registrado e aparece no resumo das 18:30
             msg = messenger.alert_msg(s, iv, opt, err, t0.date(), ibov, positions.contar_abertas(), mv)
@@ -133,11 +133,14 @@ def job_intraday():
             elif config.FILTRO_MERCADO and mv is not None and mv > 0:
                 bloq = True
                 log.info("%s %s: BOVA11 %.1f%% no mesmo sentido; fica para o resumo", s.ticker, s.direction, mv)
+            elif config.PAUSAR_PUTS and s.direction == "short":
+                pausado = True   # put pausado (16/11): fica registrado e no placar, sem alerta
+                log.info("%s %s: put pausado; fica para o resumo e o placar", s.ticker, s.direction)
             else:
                 messenger.send(msg)
         else:
             log.info("%s %s: sinal sem opcao (%s); fica para o resumo", s.ticker, s.direction, err)
-        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "ruim": ruim, "bloq_mercado": bloq, "mercado": mv, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
+        database.save_alert(str(t0.date()), s.ticker, s.direction, t0.isoformat(), {"signal": s.dict(), "option": opt, "reason": err, "ruim": ruim, "bloq_mercado": bloq, "pausado": pausado, "mercado": mv, "iv": {"iv_rank": iv["iv_rank"], "iv_pct": iv["iv_pct"]}})
         try:   # registra quais regras de IV (A/B/C) teriam aprovado este sinal, para comparar resultados depois
             database.save_shadow(str(t0.date()), s.ticker, s.direction, t0.isoformat(), iv["iv"], iv["iv_rank"], iv["iv_pct"],
                                  iv_filter.iv_favoravel(iv["iv_rank"], iv["iv_pct"]), True, iv["iv_rank"] <= config.SHADOW_C_RANK_MAX, s.dict())
@@ -4570,6 +4573,9 @@ def job_summary():
     bq = database.mercado_bloq_signals(hoje)
     if bq:
         L.append("Bloqueados (BOVA11 no mesmo sentido, não enviados): " + ", ".join(f"{t} {'▲' if d == 'long' else '▼'}" for t, d in bq))
+    pz = database.pausados_signals(hoje)
+    if pz:
+        L.append("Puts pausados (registrados, não enviados): " + ", ".join(f"{t} ▼" for t, d in pz))
     try:
         near = _near_list(Brapi())
         if near:

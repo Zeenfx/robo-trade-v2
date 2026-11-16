@@ -40,6 +40,7 @@ TZ = "America/Sao_Paulo"
 # Regra B: IV nao bloqueia (so etiqueta). IV_GATE=true volta ao bloqueio Rank<=25 e Pct<=30 (regra A).
 IV_GATE = os.getenv("IV_GATE", "false").lower() == "true"
 ATR_TO_SIGMA = 0.8           # converte ATR D1 em desvio-padrao diario aproximado
+PAUSAR_PUTS = os.getenv("PAUSAR_PUTS", "1") == "1"   # 16/11: put pausado (1 alvo em 16; 5 anos sem vantagem); o sinal fica registrado e medido no placar, sem alerta. PAUSAR_PUTS=0 reativa
 FILTRO_MERCADO = os.getenv("FILTRO_MERCADO", "1") == "1"   # nao envia alerta quando o BOVA11 anda no mesmo sentido do sinal (teste de 09/11: alvo 9% a favor x 69% contra); o sinal fica registrado
 IBOV_ALERT_PCT = 5.0   # variacao do Ibovespa no dia (em %) a partir da qual o alerta traz aviso de dia atipico
 LATE_PCT = 2.0               # aviso de alerta tardio: preco ja passou mais que isso do nivel rompido
