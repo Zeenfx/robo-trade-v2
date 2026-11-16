@@ -3,7 +3,7 @@ from datetime import datetime
 import config
 from iv_filter import pick_expiration, is_weekly_symbol, is_monthly
 
-def select(api, signal, today):
+def select(api, signal, today, spot=None):
     """Tenta cada vencimento mensal da janela, do mais proximo de 45 DTE para o mais distante; o primeiro com opcao valida vence."""
     exps = api.expirations(signal.ticker)
     cands = []
@@ -14,12 +14,25 @@ def select(api, signal, today):
     if not cands: return None, "sem vencimento mensal entre %d e %d DTE" % (config.OPT_MIN_DTE, config.OPT_MAX_DTE)
     first_err = ""
     for exp, dte in sorted(cands, key=lambda c: abs(c[1] - 45)):
-        best, err = _select_exp(api, signal, exp, dte)
+        best, err = _select_exp(api, signal, exp, dte, spot)
         if best: return best, ""
         first_err = first_err or err
     return None, first_err
 
-def _select_exp(api, signal, exp, dte):
+def _delta_agora(a, side, dte, spot):
+    """Delta de Black-Scholes com a cotacao de agora (spot) e a IV da serie. None se faltar dado."""
+    from math import log, sqrt
+    from statistics import NormalDist
+    v = a.get("impliedVolatility")
+    if v and v > 3: v = v / 100.0
+    if not v or not (0.05 <= v <= 3) or not a.get("strike") or spot <= 0: return None
+    T = max(dte, 1) / 365.0
+    d1 = (log(spot / a["strike"]) + (config.RISK_FREE + v * v / 2) * T) / (v * sqrt(T))
+    n = NormalDist().cdf
+    return n(d1) if side == "call" else n(d1) - 1
+
+
+def _select_exp(api, signal, exp, dte, spot=None):
     side = "call" if signal.direction == "long" else "put"
     d_an, an = api.analytics(signal.ticker, exp, side=side)
     d_ch, ch = api.chain(signal.ticker, exp, side=side)
@@ -31,6 +44,9 @@ def _select_exp(api, signal, exp, dte):
         s = book.get(a["symbol"])
         if not s or a.get("delta") is None or is_weekly_symbol(a["symbol"]): continue
         dl = abs(a["delta"])
+        if spot:   # monitor de 5 min: o delta de ontem nao vale se a acao ja andou; usa o de agora
+            dn = _delta_agora(a, side, dte, spot)
+            if dn is not None: a = dict(a, delta=dn); dl = abs(dn)
         if not (config.DELTA_MIN <= dl <= config.DELTA_MAX):
             no_delta += 1
             continue

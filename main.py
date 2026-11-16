@@ -3633,7 +3633,7 @@ def _vivo5m(api, t0, tk):
         if ts <= ult or (ult and ts - ult < 1800) or n_dia >= 3: continue
         opt = None
         try:
-            opt, err = options_selector.select(api, NS(ticker=tk, direction="long" if dr == 1 else "short"), hoje)
+            opt, err = options_selector.select(api, NS(ticker=tk, direction="long" if dr == 1 else "short"), hoje, spot=cl[i])
         except Exception as e:
             err = str(e)
         reforco = n_dia > 0
@@ -3645,9 +3645,9 @@ def _vivo5m(api, t0, tk):
             except Exception: est = None
             if est:   # os precos da brapi sao de ontem: recalcula com o preço de agora (Black-Scholes)
                 teto = round(est * (1.3 if opt.get("last_only") else 1.1), 2)
-                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Valor estimado agora: ~{fmt(est)} · compra até ~{fmt(teto)} (confira o ask)", f"Spread de ontem {fmt(opt['spread_pct'], 0)}% · delta de ontem {fmt(abs(opt['delta']))}"]
+                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Valor estimado agora: ~{fmt(est)} · compra até ~{fmt(teto)} (confira o ask)", f"Delta com o preço de agora {fmt(abs(opt['delta']))} · spread de ontem {fmt(opt['spread_pct'], 0)}%"]
             else:
-                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Preço de ontem: ~{fmt(opt['ask'])} (desatualizado, confira o ask)", f"Spread de ontem {fmt(opt['spread_pct'], 0)}% · delta de ontem {fmt(abs(opt['delta']))}"]
+                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Preço de ontem: ~{fmt(opt['ask'])} (desatualizado, confira o ask)", f"Delta com o preço de agora {fmt(abs(opt['delta']))} · spread de ontem {fmt(opt['spread_pct'], 0)}%"]
         else:
             L.append(f"Sem opção líquida no filtro: {err}")
         if messenger.send("\n".join(L)):
