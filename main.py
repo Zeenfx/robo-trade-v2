@@ -3636,6 +3636,9 @@ def _vivo5m(api, t0, tk):
             opt, err = options_selector.select(api, NS(ticker=tk, direction="long" if dr == 1 else "short"), hoje, spot=cl[i])
         except Exception as e:
             err = str(e)
+        if not opt:   # sem opcao liquida: fica so no placar de 5 min, sem aviso (igual aos alertas de rompimento)
+            log.info("%s: sinal %s de 5 min sem opcao liquida (%s); so registrado", tk, "call" if dr == 1 else "put", err)
+            continue
         reforco = n_dia > 0
         tit = ("reforço" if reforco else "entrada") + (" de CALL" if dr == 1 else " de PUT")
         L = [f"{'🟢' if dr == 1 else '🔴'} <b>{tk} · {tit}</b>", f"Gráfico de 5 min às {hm(i).strftime('%H:%M')}: linha {'subindo' if dr == 1 else 'caindo'} com o histograma a favor (regra {var}).", f"{tk} em {fmt(cl[i])}." + (" Quantidade menor." if reforco else ""), ""]
