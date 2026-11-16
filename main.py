@@ -3639,7 +3639,14 @@ def _bova_vivo(api, t0):
         tit = ("reforço" if reforco else "entrada") + (" de CALL" if dr == 1 else " de PUT")
         L = [f"{'🟢' if dr == 1 else '🔴'} <b>BOVA11 · {tit}</b>", f"Gráfico de 5 min às {hm(i).strftime('%H:%M')}: linha {'subindo' if dr == 1 else 'caindo'} com o histograma a favor (regra {var}).", f"BOVA11 em {fmt(cl[i])}." + (" Quantidade menor." if reforco else ""), ""]
         if opt:
-            L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Compra: até ~{fmt(opt['ask'])} (confira o ask)", f"Delta {fmt(abs(opt['delta']))} · spread {fmt(opt['spread_pct'], 0)}%"]
+            est = None
+            try: est = messenger.estimar_preco(NS(direction="long" if dr == 1 else "short", price=cl[i]), opt)
+            except Exception: est = None
+            if est:   # os precos da brapi sao de ontem: recalcula com o BOVA11 de agora (Black-Scholes)
+                teto = round(est * (1.3 if opt.get("last_only") else 1.1), 2)
+                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Valor estimado agora: ~{fmt(est)} · compra até ~{fmt(teto)} (confira o ask)", f"Spread de ontem {fmt(opt['spread_pct'], 0)}% · delta de ontem {fmt(abs(opt['delta']))}"]
+            else:
+                L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Preço de ontem: ~{fmt(opt['ask'])} (desatualizado, confira o ask)", f"Spread de ontem {fmt(opt['spread_pct'], 0)}% · delta de ontem {fmt(abs(opt['delta']))}"]
         else:
             L.append(f"Sem opção líquida no filtro: {err}")
         if messenger.send("\n".join(L)):
