@@ -4249,7 +4249,7 @@ def job_sinais_5m():
     except Exception:
         log.exception("sinais_5m falhou")
 
-def _avalia_sinal(dl, daily, s):
+def _avalia_sinal(dl, daily, s, dlb=None):
     """Mede um sinal gravado: pico a favor, saida na virada da linha, saida com 2 barras encolhendo (ou fim do dia) e opcao estimada (BS, ATM, 35 dias, 5% de custo por lado)."""
     import opcao_teste as ot
     idx = next((k for k, b in enumerate(dl) if b["date"] == s["ts"]), None)
@@ -4258,10 +4258,15 @@ def _avalia_sinal(dl, daily, s):
     di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14)
     dia = lambda k: datetime.fromtimestamp(dl[k]["date"], TZ).date()
     N = len(dl); d0 = dia(idx)
-    k = idx + 1; fim_l = fim_h = idx; pico = 0.0; aberto_l = aberto_h = True
+    atr = _atr_serie(dl)
+    k = idx + 1; fim_l = fim_h = fim_t = idx; pico = 0.0; aberto_l = aberto_h = aberto_t = True; pico_c = 0.0
     while k < N and dia(k) == d0:
         fav = (dl[k]["high"] / cl[idx] - 1) * 100 if dr == 1 else (1 - dl[k]["low"] / cl[idx]) * 100
         pico = max(pico, fav)
+        if aberto_t:   # stop que acompanha o pico: sai quando o fechamento devolve 2,5 ATR (5 min) do melhor fechamento
+            fim_t = k; fc = dr * (cl[k] / cl[idx] - 1) * 100
+            pico_c = max(pico_c, fc)
+            if pico_c - fc >= 2.5 * atr[k] / cl[k] * 100: aberto_t = False
         if aberto_l:
             fim_l = k
             if di[k] == -dr: aberto_l = False
@@ -4275,12 +4280,20 @@ def _avalia_sinal(dl, daily, s):
     P0 = ot.valor(call, S0, K, 35, v)
     opc = lambda S1: (ot.valor(call, S1, K, 35, v) * 0.95 / (P0 * 1.05) - 1) * 100 if P0 > 0.01 else None
     S_pico = S0 * (1 + dr * pico / 100)
-    return {"pico": pico, "linha": pct(fim_l), "h2": pct(fim_h), "opc_h2": opc(cl[fim_h]), "opc_pico": opc(S_pico)}
+    mkt = None   # 1 se a linha de 5 min do BOVA11 aponta no mesmo sentido do sinal (so para os outros ativos)
+    if dlb and s["ticker"] != "BOVA11":
+        kb = next((j for j, b in enumerate(dlb) if b["date"] == s["ts"]), None)
+        if kb is not None and kb >= 60: mkt = 1 if _dir_trail(dlb, 6, 0.5)[kb] == dr else 0
+    return {"pico": pico, "linha": pct(fim_l), "h2": pct(fim_h), "trail": pct(fim_t), "mkt": mkt, "opc_h2": opc(cl[fim_h]), "opc_pico": opc(S_pico)}
 
 def _roda_avaliacao():
-    pend = [s for s in database.sinais_intra(True) if s["dia"] <= str(now().date())]
+    hoje = now().date(); desde = str(hoje - timedelta(days=4))
+    pend = [s for s in database.sinais_intra() if s["dia"] <= str(hoje) and (not s["res"] or (s["dia"] >= desde and '"trail"' not in s["res"]))]
     if not pend: return 0
     api = Brapi(); cache = {}; n = 0
+    try: dlb = api.history("BOVA11", "5d", "5m")
+    except Exception as e:
+        log.warning("avaliacao BOVA11: %s", e); dlb = None
     for s in pend:
         t = s["ticker"]
         if t not in cache:
@@ -4291,7 +4304,9 @@ def _roda_avaliacao():
         dl, daily = cache[t]
         if s["dia"] == str(now().date()) and now().hour < 18: continue   # dia ainda aberto
         try:
-            database.set_res_sinal(s["id"], json.dumps(_avalia_sinal(dl, daily, s))); n += 1
+            r = _avalia_sinal(dl, daily, s, dlb)
+            if s["res"] and r.get("sem_dado"): continue   # nao troca um resultado bom por falta de dado
+            database.set_res_sinal(s["id"], json.dumps(r)); n += 1
         except Exception as e:
             log.warning("avalia %s: %s", t, e)
     return n
@@ -4328,6 +4343,19 @@ def _placar_5m_texto(desde=None):
                 L.append(f"  {nome_g}: {len(g)} sinais · ativo acima de +0,5%: {fmt(100 * sum(1 for s, r in g if r['h2'] >= 0.5) / len(g), 0)}% · opção pico acima de +20%: {fmt(100 * sum(1 for s, r in g if (r['opc_pico'] or 0) >= 20) / len(g), 0)}%")
     if pend: L.append(f"\n{pend} sinais ainda sem medir (dia aberto ou sem dado).")
     if not todos: L.append("Ainda não há sinais gravados.")
+    L += ["", "SAÍDAS E MERCADO (só medição)", "Saída: hist = 2 barras encolhendo; linha = linha vira contra; stop = devolve 2,5 ATR do pico. 'A favor' = linha de 5 min do BOVA11 no mesmo sentido do sinal."]
+    for nome, filtro in (("Todas as regras", lambda s: True), ("E1", lambda s: s["id"] in ids_e1), ("D", lambda s: s["var"] == "D"), ("E", lambda s: s["var"] == "E")):
+        av = [(s, json.loads(s["res"])) for s in todos if filtro(s) and s["res"]]
+        av = [(s, r) for s, r in av if not r.get("sem_dado") and "trail" in r]
+        if not av:
+            L.append(f"{nome}: sem sinais medidos"); continue
+        sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 2) + "%"
+        def lin(x, ch): return f"{sg(sum(r[ch] for _, r in x) / len(x))} (acima de +0,5%: {fmt(100 * sum(1 for _, r in x if r[ch] >= 0.5) / len(x), 0)}%)"
+        L.append(f"{nome}: {len(av)} sinais · pico médio {sg(sum(r['pico'] for _, r in av) / len(av))}")
+        L.append(f"  saída hist {lin(av, 'h2')} · linha {lin(av, 'linha')} · stop {lin(av, 'trail')}")
+        for rot, v in (("a favor do mercado", 1), ("contra o mercado", 0)):
+            g = [(s, r) for s, r in av if r.get("mkt") == v]
+            if g: L.append(f"  {rot}: {len(g)} · pico médio {sg(sum(r['pico'] for _, r in g) / len(g))} · hist {lin(g, 'h2')} · stop {lin(g, 'trail')}")
     return "\n".join(L)
 
 def job_placar_5m(manual=False, semanal=False):
