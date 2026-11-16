@@ -3590,23 +3590,24 @@ def _vivo_ativo(api, t0, t):
             messenger.send(f"🔔 <b>{t} · atenção para sair da CALL</b>\nDurante o dia: {motivo}.\n{t} em {fmt(cl[-1])} (máxima de hoje {fmt(ch['high'])}).")
             database.set_meta(ks, "1")
 
-def _bova_vivo(api, t0):
-    """Monitor proprio do BOVA11 no 5 min, nos dois sentidos (so candles fechados). Entrada: regra A (linha propria vira + MACD cruza), D (linha vira com histograma ja a favor) ou E (continuacao em nova minima/maxima do dia). Primeira entrada do sentido no dia e 'entrada'; as seguintes, com 30 min de intervalo (ate 3 por sentido), sao 'reforco' em quantidade menor. Com entrada aberta, avisa para sair quando a linha vira contra ou o histograma encolhe 2 barras seguidas. Os sinais ja ficam no placar de 5 min."""
+def _vivo5m(api, t0, tk):
+    """Monitor proprio no 5 min (BOVA11 e as 5 acoes do diario), nos dois sentidos (so candles fechados). Entrada: regra A (linha propria vira + MACD cruza), D (linha vira com histograma ja a favor) ou E (continuacao em nova minima/maxima do dia). Primeira entrada do sentido no dia e 'entrada'; as seguintes, com 30 min de intervalo (ate 3 por sentido), sao 'reforco' em quantidade menor. Com entrada aberta, avisa para sair quando a linha vira contra ou o histograma encolhe 2 barras seguidas. Os sinais ja ficam no placar de 5 min."""
     from messenger import fmt
     from types import SimpleNamespace as NS
     hoje = t0.date(); hoje_s = str(hoje)
-    dl = api.history("BOVA11", "5d", "5m")
+    P = "bovaint" if tk == "BOVA11" else f"bovaint:{tk}"
+    dl = api.history(tk, "5d", "5m")
     if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]
     N = len(dl)
     if N < 70 or datetime.fromtimestamp(dl[-1]["date"], TZ).date() != hoje: return
     cl = [b["close"] for b in dl]
     hm = lambda k: datetime.fromtimestamp(dl[k]["date"], TZ)
     # saida da entrada aberta
-    ab = database.get_meta("bovaint:aberta")
+    ab = database.get_meta(f"{P}:aberta")
     if ab:
         d_s, dr_s, ts_s, p_s = ab.split("|"); dr = int(dr_s); ts0 = int(ts_s)
         if d_s != hoje_s:
-            database.set_meta("bovaint:aberta", "")
+            database.set_meta(f"{P}:aberta", "")
         else:
             idx = next((k for k, b in enumerate(dl) if b["date"] == ts0), None)
             if idx is not None and idx < N - 1:
@@ -3618,8 +3619,8 @@ def _bova_vivo(api, t0):
                         motivo = "o histograma do MACD encolheu 2 barras seguidas"; break
                 if motivo:
                     p0 = float(p_s); mov = dr * (cl[-1] / p0 - 1) * 100
-                    messenger.send(f"🔔 <b>BOVA11 · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\nBOVA11 em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")
-                    database.set_meta("bovaint:aberta", "")
+                    messenger.send(f"🔔 <b>{tk} · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\n{tk} em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")
+                    database.set_meta(f"{P}:aberta", "")
     # entrada
     novos = [(var, dr, i) for var, dr, i, _ in _sinais_5m(dl) if var in ("A", "D", "E") and i >= N - 2 and hm(i).date() == hoje]
     for dr in (1, -1):
@@ -3627,22 +3628,22 @@ def _bova_vivo(api, t0):
         if not cand: continue
         var, _, i = max(cand, key=lambda x: x[2])
         ts = dl[i]["date"]
-        ult = int(database.get_meta(f"bovaint:ult:{dr}:{hoje_s}") or 0)
-        n_dia = int(database.get_meta(f"bovaint:n:{dr}:{hoje_s}") or 0)
+        ult = int(database.get_meta(f"{P}:ult:{dr}:{hoje_s}") or 0)
+        n_dia = int(database.get_meta(f"{P}:n:{dr}:{hoje_s}") or 0)
         if ts <= ult or (ult and ts - ult < 1800) or n_dia >= 3: continue
         opt = None
         try:
-            opt, err = options_selector.select(api, NS(ticker="BOVA11", direction="long" if dr == 1 else "short"), hoje)
+            opt, err = options_selector.select(api, NS(ticker=tk, direction="long" if dr == 1 else "short"), hoje)
         except Exception as e:
             err = str(e)
         reforco = n_dia > 0
         tit = ("reforço" if reforco else "entrada") + (" de CALL" if dr == 1 else " de PUT")
-        L = [f"{'🟢' if dr == 1 else '🔴'} <b>BOVA11 · {tit}</b>", f"Gráfico de 5 min às {hm(i).strftime('%H:%M')}: linha {'subindo' if dr == 1 else 'caindo'} com o histograma a favor (regra {var}).", f"BOVA11 em {fmt(cl[i])}." + (" Quantidade menor." if reforco else ""), ""]
+        L = [f"{'🟢' if dr == 1 else '🔴'} <b>{tk} · {tit}</b>", f"Gráfico de 5 min às {hm(i).strftime('%H:%M')}: linha {'subindo' if dr == 1 else 'caindo'} com o histograma a favor (regra {var}).", f"{tk} em {fmt(cl[i])}." + (" Quantidade menor." if reforco else ""), ""]
         if opt:
             est = None
             try: est = messenger.estimar_preco(NS(direction="long" if dr == 1 else "short", price=cl[i]), opt)
             except Exception: est = None
-            if est:   # os precos da brapi sao de ontem: recalcula com o BOVA11 de agora (Black-Scholes)
+            if est:   # os precos da brapi sao de ontem: recalcula com o preço de agora (Black-Scholes)
                 teto = round(est * (1.3 if opt.get("last_only") else 1.1), 2)
                 L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Valor estimado agora: ~{fmt(est)} · compra até ~{fmt(teto)} (confira o ask)", f"Spread de ontem {fmt(opt['spread_pct'], 0)}% · delta de ontem {fmt(abs(opt['delta']))}"]
             else:
@@ -3650,14 +3651,20 @@ def _bova_vivo(api, t0):
         else:
             L.append(f"Sem opção líquida no filtro: {err}")
         if messenger.send("\n".join(L)):
-            database.set_meta(f"bovaint:ult:{dr}:{hoje_s}", str(ts)); database.set_meta(f"bovaint:n:{dr}:{hoje_s}", str(n_dia + 1))
-            database.set_meta("bovaint:aberta", f"{hoje_s}|{dr}|{ts}|{cl[i]}")
+            database.set_meta(f"{P}:ult:{dr}:{hoje_s}", str(ts)); database.set_meta(f"{P}:n:{dr}:{hoje_s}", str(n_dia + 1))
+            database.set_meta(f"{P}:aberta", f"{hoje_s}|{dr}|{ts}|{cl[i]}")
 
 def job_bova_vivo():
+    """A cada 5 min no pregao: monitor de 5 min do BOVA11 e das 5 acoes do diario."""
     try:
         t0 = now(); hh = t0.hour + t0.minute / 60
         if not (10.08 <= hh <= 17.9): return
-        _bova_vivo(Brapi(), t0)
+        api = Brapi()
+        for tk in LISTA_DIARIA:
+            try:
+                _vivo5m(api, t0, tk)
+            except Exception as e:
+                log.warning("vivo5m %s: %s", tk, e)
     except Exception:
         log.exception("bova_vivo falhou")
 
