@@ -2752,6 +2752,41 @@ def _diag_macd_opcao():
 
 
 LISTA_DIARIA = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BBDC4"]
+# 17/11: o aviso ao vivo e a confirmacao das 18:10 da regra diaria (so CALL) cobrem o universo inteiro (teste de 5 anos: a vantagem aparece nos ~30 ativos); fora dos 6 principais, sem opcao liquida fica so registrado
+def _lista_diario_vivo():
+    return list(dict.fromkeys(list(LISTA_DIARIA) + list(config.UNIVERSE)))
+
+def _guarda_opt(t, opt, spot, hoje):
+    """Guarda a opcao do aviso de CALL (e o valor estimado na entrada) para o aviso de realizacao parcial em +20%."""
+    from types import SimpleNamespace as NS
+    try:
+        antigo = database.get_meta(f"lm:opt:{t}")
+        if antigo and json.loads(antigo).get("dia0") == str(hoje): return
+        d = {k: opt.get(k) for k in ("symbol", "strike", "expiration", "ask", "iv", "dte", "spot_ref", "last_only")}
+        d["spot0"] = spot; d["dia0"] = str(hoje)
+        d["est0"] = messenger.estimar_preco(NS(direction="long", price=spot), opt)
+        database.set_meta(f"lm:opt:{t}", json.dumps(d))
+    except Exception as e:
+        log.warning("guarda opcao %s: %s", t, e)
+
+def _parcial(t, hoje, spot):
+    """Avisa uma vez por posicao quando a opcao estimada (Black-Scholes, preco de agora, prazo corrido) chega a +20% sobre a entrada."""
+    from types import SimpleNamespace as NS
+    from messenger import fmt
+    raw = database.get_meta(f"lm:opt:{t}")
+    if not raw: return
+    d = json.loads(raw)
+    if not d.get("est0"): return
+    kp = f"lm:parcial:{t}:{d['dia0']}"
+    if database.get_meta(kp): return
+    opt = dict(d)
+    opt["dte"] = max(1, (d.get("dte") or 0) - (hoje - datetime.strptime(d["dia0"], "%Y-%m-%d").date()).days)
+    est = messenger.estimar_preco(NS(direction="long", price=spot), opt)
+    if not est: return
+    ganho = (est / d["est0"] - 1) * 100
+    if ganho >= 20:
+        messenger.send(f"💰 <b>{t} · opção estimada em +{fmt(ganho, 0)}%</b>\nConsidere realizar parte.\nOpção <code>{d['symbol']}</code>: valor estimado ~{fmt(est)} (entrada ~{fmt(d['est0'])}). Estimativa com o preço de agora, confira no Profit.")
+        database.set_meta(kp, "1")
 
 def job_bova_diario(manual=False):
     try:
@@ -2767,7 +2802,7 @@ def _bova_diario(manual=False):
     """Rotina diaria (depois do fechamento) no BOVA11 e em 5 acoes liquidas: CALL quando a linha vira para cima e o histograma do MACD cruza o zero (regra do Couto, grafico diario); depois avisa para sair quando o histograma comecar a encolher ou a linha virar para baixo."""
     api, t0 = Brapi(), now()
     estados = []
-    for t in LISTA_DIARIA:
+    for t in _lista_diario_vivo():
         try:
             estados.append(_linha_macd_ativo(api, t0, t, manual))
         except Exception as e:
@@ -2818,6 +2853,10 @@ def _linha_macd_ativo(api, t0, t, manual):
         except BrapiError as e:
             opt, err = None, str(e)
         conf = database.get_meta(kv) == hoje_s
+        if not opt and t not in LISTA_DIARIA:   # fora dos 6 principais, sem opcao liquida: so registrado
+            database.set_meta(kc + hoje_s, "1")
+            return f"{t}: sinal de call sem opção líquida (só registrado)"
+        if opt: _guarda_opt(t, opt, cl[-1], t0.date())
         L = [f"🟢 <b>CALL · {t}</b>", "Diário: a linha virou para cima e o MACD cruzou" + (" (confirmado no fechamento)" if conf else ""), f"{t} fechou a {fmt(cl[-1])}", ""]
         if opt:
             L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
@@ -3567,11 +3606,19 @@ def _vivo_ativo(api, t0, t):
     ka = "bova:aberta" if t == "BOVA11" else f"lm:aberta:{t}"
     aberta = database.get_meta(ka)
     kv = f"vivo:forma:{t}"
+    if aberta or database.get_meta(kv) == hoje_s:   # realizacao parcial: opcao estimada em +20%
+        try: _parcial(t, hoje, cl[-1])
+        except Exception as e: log.warning("parcial %s: %s", t, e)
     if sinal and database.get_meta(kv) != hoje_s and not aberta:
         try:
             opt, err = options_selector.select(api, NS(ticker=t, direction="long"), hoje)
         except BrapiError as e:
             opt, err = None, str(e)
+        if not opt and t not in LISTA_DIARIA:   # fora dos 6 principais, sem opcao liquida: so registrado (uma vez por dia)
+            database.set_meta(kv, hoje_s)
+            log.info("%s: CALL em formação sem opção líquida (%s); só registrado", t, err)
+            return
+        if opt: _guarda_opt(t, opt, cl[-1], hoje)
         L = [f"🟡 <b>CALL em formação · {t}</b>", f"Diário com o preço de agora ({fmt(cl[-1])}): a linha virou para cima e o MACD cruzou.", "Entrada em formação com o preço de agora; às 18:10 eu confirmo ou aviso se desfez.", ""]
         if opt:
             L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}",
@@ -3696,7 +3743,7 @@ def job_diario_vivo():
         t0 = now(); hh = t0.hour + t0.minute / 60
         if not (10.3 <= hh <= 17.9): return
         api = Brapi()
-        for t in LISTA_DIARIA:
+        for t in _lista_diario_vivo():
             try:
                 _vivo_ativo(api, t0, t)
             except Exception as e:
