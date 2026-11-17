@@ -3622,7 +3622,25 @@ def _vivo5m(api, t0, tk):
                     messenger.send(f"🔔 <b>{tk} · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\n{tk} em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")
                     database.set_meta(f"{P}:aberta", "")
     # entrada
-    novos = [(var, dr, i) for var, dr, i, _ in _sinais_5m(dl) if var in ("A", "D", "E") and i >= N - 2 and hm(i).date() == hoje]
+    todos_s = _sinais_5m(dl)
+    if config.E1_MERCADO:   # 17/11: so o primeiro E do dia (ate 12:00) com a linha de 5 min do BOVA11 no mesmo sentido; as demais regras ficam so no placar
+        e_hoje = sorted(i for var, _, i, _ in todos_s if var == "E" and hm(i).date() == hoje)
+        primeiro_e = e_hoje[0] if e_hoje else None
+        dlb = None
+        if tk != "BOVA11":
+            try:
+                dlb = api.history("BOVA11", "5d", "5m")
+                if dlb and dlb[-1]["date"] + 300 > t0.timestamp(): dlb = dlb[:-1]
+            except Exception as e:
+                log.warning("BOVA11 5m indisponivel (%s)", e)
+        def _a_favor(i, dr):
+            if tk == "BOVA11": return True
+            if not dlb: return False
+            kb = next((j for j, b in enumerate(dlb) if b["date"] == dl[i]["date"]), None)
+            return kb is not None and kb >= 60 and _dir_trail(dlb, 6, 0.5)[kb] == dr
+        novos = [(var, dr, i) for var, dr, i, _ in todos_s if var == "E" and i == primeiro_e and i >= N - 2 and hm(i).hour + hm(i).minute / 60 <= 12.0 and _a_favor(i, dr)]
+    else:
+        novos = [(var, dr, i) for var, dr, i, _ in todos_s if var in ("A", "D", "E") and i >= N - 2 and hm(i).date() == hoje]
     for dr in (1, -1):
         cand = [x for x in novos if x[1] == dr]
         if not cand: continue
