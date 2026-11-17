@@ -4322,6 +4322,8 @@ def job_sinais_5m():
     except Exception:
         log.exception("sinais_5m falhou")
 
+VARIANTES_OPC = {"delta 0,50 · 35d": (0.5, 35), "delta 0,70 · 35d": (0.7, 35), "delta 0,70 · 20d": (0.7, 20), "delta 0,80 · 20d": (0.8, 20)}
+
 def _avalia_sinal(dl, daily, s, dlb=None):
     """Mede um sinal gravado: pico a favor, saida na virada da linha, saida com 2 barras encolhendo (ou fim do dia) e opcao estimada (BS, ATM, 35 dias, 5% de custo por lado)."""
     import opcao_teste as ot
@@ -4357,11 +4359,18 @@ def _avalia_sinal(dl, daily, s, dlb=None):
     if dlb and s["ticker"] != "BOVA11":
         kb = next((j for j, b in enumerate(dlb) if b["date"] == s["ts"]), None)
         if kb is not None and kb >= 60: mkt = 1 if _dir_trail(dlb, 6, 0.5)[kb] == dr else 0
-    return {"pico": pico, "linha": pct(fim_l), "h2": pct(fim_h), "trail": pct(fim_t), "mkt": mkt, "opc_h2": opc(cl[fim_h]), "opc_pico": opc(S_pico)}
+    ov = {}   # variantes de opcao (so medicao): delta e dias ate o vencimento; saida no stop e no pico
+    for nm, (dlt, dd) in VARIANTES_OPC.items():
+        try:
+            Kv = ot.strike_por_delta(call, S0, dd / 365.0, v, dlt); Pv = ot.valor(call, S0, Kv, dd, v)
+            f = lambda S1: (ot.valor(call, S1, Kv, dd, v) * 0.95 / (Pv * 1.05) - 1) * 100 if Pv > 0.01 else None
+            ov[nm] = [f(cl[fim_t]), f(S_pico)]
+        except Exception: ov[nm] = [None, None]
+    return {"pico": pico, "linha": pct(fim_l), "h2": pct(fim_h), "trail": pct(fim_t), "mkt": mkt, "opc_h2": opc(cl[fim_h]), "opc_pico": opc(S_pico), "ov": ov}
 
 def _roda_avaliacao():
     hoje = now().date(); desde = str(hoje - timedelta(days=4))
-    pend = [s for s in database.sinais_intra() if s["dia"] <= str(hoje) and (not s["res"] or (s["dia"] >= desde and '"trail"' not in s["res"]))]
+    pend = [s for s in database.sinais_intra() if s["dia"] <= str(hoje) and (not s["res"] or (s["dia"] >= desde and '"ov"' not in s["res"]))]
     if not pend: return 0
     api = Brapi(); cache = {}; n = 0
     try: dlb = api.history("BOVA11", "5d", "5m")
@@ -4429,6 +4438,18 @@ def _placar_5m_texto(desde=None):
         for rot, v in (("a favor do mercado", 1), ("contra o mercado", 0)):
             g = [(s, r) for s, r in av if r.get("mkt") == v]
             if g: L.append(f"  {rot}: {len(g)} · pico médio {sg(sum(r['pico'] for _, r in g) / len(g))} · hist {lin(g, 'h2')} · stop {lin(g, 'trail')}")
+    L += ["", "OPÇÃO MAIS DENTRO DO DINHEIRO (só medição) · E1 a favor do mercado, saída no stop", "Estimativa BS, 5% de custo por lado. Média do resultado da opção na saída · % positivas · % com pico acima de +20%."]
+    g = [(s, json.loads(s["res"])) for s in todos if s["id"] in ids_e1 and s["res"]]
+    g = [(s, r) for s, r in g if not r.get("sem_dado") and r.get("ov") and r.get("mkt") in (1, None)]
+    if not g: L.append("sem sinais medidos ainda")
+    else:
+        L.append(f"{len(g)} sinais")
+        for nm in VARIANTES_OPC:
+            xs = [r["ov"][nm][0] for s, r in g if r["ov"].get(nm) and r["ov"][nm][0] is not None]
+            ps = [r["ov"][nm][1] for s, r in g if r["ov"].get(nm) and r["ov"][nm][1] is not None]
+            if not xs: continue
+            m = sum(xs) / len(xs)
+            L.append(f"  {nm}: média {'+' if m >= 0 else '−'}{fmt(abs(m), 1)}% · positivas {fmt(100 * sum(1 for x in xs if x > 0) / len(xs), 0)}% · pico acima de +20%: {fmt(100 * sum(1 for x in ps if x >= 20) / max(len(ps), 1), 0)}%")
     return "\n".join(L)
 
 def job_placar_5m(manual=False, semanal=False):
