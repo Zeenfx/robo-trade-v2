@@ -3660,10 +3660,18 @@ def _vivo5m(api, t0, tk):
             if idx is not None and idx < N - 1:
                 di = _dir_trail(dl, 6, 0.5); hi = _macd_hist(cl, 14, 34, 14)
                 motivo = None
-                for k in range(idx + 1, N):
-                    if di[k] == -dr: motivo = "a linha virou contra"; break
-                    if k >= idx + 3 and all((hi[k - j] < hi[k - j - 1]) if dr == 1 else (hi[k - j] > hi[k - j - 1]) for j in range(2)):
-                        motivo = "o histograma do MACD encolheu 2 barras seguidas"; break
+                if config.SAIDA_STOP:   # 17/11: saida que acompanha o pico (placar: unico recorte positivo no E1 a favor), em vez de sair em poucos minutos pelo histograma
+                    atr5 = _atr_serie(dl); p_ref = float(p_s); pico_c = 0.0
+                    for k in range(idx + 1, N):
+                        fc = dr * (cl[k] / p_ref - 1) * 100
+                        pico_c = max(pico_c, fc)
+                        if pico_c - fc >= 2.5 * atr5[k] / cl[k] * 100:
+                            motivo = "o preço devolveu o movimento (2,5 ATR do melhor ponto desde a entrada)"; break
+                else:
+                    for k in range(idx + 1, N):
+                        if di[k] == -dr: motivo = "a linha virou contra"; break
+                        if k >= idx + 3 and all((hi[k - j] < hi[k - j - 1]) if dr == 1 else (hi[k - j] > hi[k - j - 1]) for j in range(2)):
+                            motivo = "o histograma do MACD encolheu 2 barras seguidas"; break
                 if motivo:
                     p0 = float(p_s); mov = dr * (cl[-1] / p0 - 1) * 100
                     messenger.send(f"🔔 <b>{tk} · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\n{tk} em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")

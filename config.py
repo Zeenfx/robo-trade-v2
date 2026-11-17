@@ -91,3 +91,4 @@ RISK_FREE = 0.145
 MAX_LOSS_TRADE = float(os.getenv("MAX_LOSS_TRADE", "50"))   # perda maxima aceita por operacao (R$), usada na quantidade sugerida   # taxa livre de risco aproximada (Selic) para estimar preco de opcao
 
 E1_MERCADO = os.getenv("E1_MERCADO", "1") == "1"   # 17/11: monitor de 5 min avisa so o primeiro E do dia (ate 12:00) com o BOVA11 a favor (placar de 5 min: unico recorte positivo); E1_MERCADO=0 volta a A, D e E
+SAIDA_STOP = os.getenv("SAIDA_STOP", "1") == "1"   # 17/11: aviso de saida do monitor de 5 min = devolve 2,5 ATR do melhor ponto desde a entrada; SAIDA_STOP=0 volta a linha/histograma
