@@ -3695,6 +3695,7 @@ def _vivo5m(api, t0, tk):
     from types import SimpleNamespace as NS
     hoje = t0.date(); hoje_s = str(hoje)
     P = "bovaint" if tk == "BOVA11" else f"bovaint:{tk}"
+    if config.REPIQUE_ENTRADA and not database.get_meta(f"{P}:aberta"): return   # 18/11: entrada vem do repique; aqui so o aviso de saida
     dl = api.history(tk, "5d", "5m")
     if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]
     N = len(dl)
@@ -3728,6 +3729,7 @@ def _vivo5m(api, t0, tk):
                     p0 = float(p_s); mov = dr * (cl[-1] / p0 - 1) * 100
                     messenger.send(f"🔔 <b>{tk} · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\n{tk} em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")
                     database.set_meta(f"{P}:aberta", "")
+    if config.REPIQUE_ENTRADA: return
     # entrada
     todos_s = _sinais_5m(dl)
     if config.E1_MERCADO:   # 17/11: so o primeiro E do dia (ate 12:00) com a linha de 5 min do BOVA11 no mesmo sentido; as demais regras ficam so no placar
@@ -3782,17 +3784,64 @@ def _vivo5m(api, t0, tk):
             database.set_meta(f"{P}:ult:{dr}:{hoje_s}", str(ts)); database.set_meta(f"{P}:n:{dr}:{hoje_s}", str(n_dia + 1))
             database.set_meta(f"{P}:aberta", f"{hoje_s}|{dr}|{ts}|{cl[i]}")
 
+def _vivo_repique(api, t0, tk):
+    """18/11: entrada de CALL por repique. Ativo que tocou a minima de 20 dias nos ultimos 5 pregoes e, hoje, fecha dois candles de 15 min seguidos a REPIQUE_MOV% ou mais acima do fechamento de ontem, com volume, e a linha de 5 min do BOVA11 para cima. Um aviso por ativo por dia; so CALL (put pausado)."""
+    from messenger import fmt
+    from types import SimpleNamespace as NS
+    hoje = t0.date(); hoje_s = str(hoje)
+    kv = f"repique:{tk}:{hoje_s}"
+    if database.get_meta(kv): return
+    daily = api.history(tk, "3mo", "1d")
+    m15 = [c for c in api.history(tk, "5d", "15m") if datetime.fromtimestamp(c["date"], TZ).date() == hoje]
+    if m15 and m15[-1]["date"] + 900 > t0.timestamp(): m15 = m15[:-1]
+    if len(m15) < 2: return
+    sg = _sinais_repique(tk, daily, m15, hoje + timedelta(days=1), config.REPIQUE_MOV).get((hoje, "long"))
+    if not sg: return
+    hh, mm = map(int, sg["hora"].split(":"))
+    if (t0.hour * 60 + t0.minute) - (hh * 60 + mm) > 25:   # sinal velho (ex.: robo reiniciou): so registra
+        database.set_meta(kv, "velho"); return
+    dl = api.history(tk, "5d", "5m")
+    if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]
+    if not dl or datetime.fromtimestamp(dl[-1]["date"], TZ).date() != hoje: return
+    if tk != "BOVA11":   # mercado a favor: linha de 5 min do BOVA11 para cima
+        dlb = api.history("BOVA11", "5d", "5m")
+        if dlb and dlb[-1]["date"] + 300 > t0.timestamp(): dlb = dlb[:-1]
+        if not dlb or len(dlb) < 70 or _dir_trail(dlb, 6, 0.5)[-1] != 1:
+            log.info("%s: repique de CALL, mas o BOVA11 nao esta para cima; espera (janela de 25 min)", tk); return
+    price = dl[-1]["close"]; ts = dl[-1]["date"]
+    try:
+        opt, err = options_selector.select(api, NS(ticker=tk, direction="long"), hoje, spot=price)
+    except Exception as e:
+        opt, err = None, str(e)
+    database.set_meta(kv, "1")
+    if not opt:
+        log.info("%s: repique de CALL sem opcao liquida (%s); so registrado", tk, err); return
+    prev = [b for b in daily if datetime.fromtimestamp(b["date"], TZ).date() < hoje][-1]["close"]
+    L = [f"🟢 <b>{tk} · repique de CALL</b>", f"{tk} está {fmt((price / prev - 1) * 100, 1)}% acima do fechamento de ontem, vindo da mínima de 20 dias (dois fechamentos de 15 min seguidos até {sg['hora']}, volume {fmt(sg['vr'], 1)}x) e com o BOVA11 subindo.", f"{tk} em {fmt(price)}."]
+    est = None
+    try: est = messenger.estimar_preco(NS(direction="long", price=price), opt)
+    except Exception: est = None
+    if est:
+        teto = round(est * (1.3 if opt.get("last_only") else 1.1), 2)
+        L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Valor estimado agora: ~{fmt(est)} · compra até ~{fmt(teto)} (confira o ask)", f"Delta com o preço de agora {fmt(abs(opt['delta']))} · spread de ontem {fmt(opt['spread_pct'], 0)}%"]
+    else:
+        L += [f"Opção: <code>{opt['symbol']}</code> · strike {fmt(opt['strike'])} · {messenger._dm(opt['expiration'])}", f"Preço de ontem: ~{fmt(opt['ask'])} (desatualizado, confira o ask)", f"Delta com o preço de agora {fmt(abs(opt['delta']))} · spread de ontem {fmt(opt['spread_pct'], 0)}%"]
+    if messenger.send("\n".join(L)):
+        P = "bovaint" if tk == "BOVA11" else f"bovaint:{tk}"
+        database.set_meta(f"{P}:aberta", f"{hoje_s}|1|{ts}|{price}")   # liga o aviso de saida (2,5 ATR do pico)
+
 def job_bova_vivo():
     """A cada 5 min no pregao: monitor de 5 min do BOVA11 e das 5 acoes do diario."""
     try:
         t0 = now(); hh = t0.hour + t0.minute / 60
         if not (10.08 <= hh <= 17.9): return
         api = Brapi()
-        for tk in LISTA_DIARIA:
+        for tk in (_lista_diario_vivo() if config.REPIQUE_ENTRADA else LISTA_DIARIA):
             try:
                 _vivo5m(api, t0, tk)
+                if config.REPIQUE_ENTRADA: _vivo_repique(api, t0, tk)
             except Exception as e:
-                log.warning("vivo5m %s: %s", tk, e)
+                log.warning("vivo5m/repique %s: %s", tk, e)
     except Exception:
         log.exception("bova_vivo falhou")
 

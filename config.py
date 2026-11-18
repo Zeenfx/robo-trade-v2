@@ -92,3 +92,6 @@ MAX_LOSS_TRADE = float(os.getenv("MAX_LOSS_TRADE", "50"))   # perda maxima aceit
 
 E1_MERCADO = os.getenv("E1_MERCADO", "1") == "1"   # 17/11: monitor de 5 min avisa so o primeiro E do dia (ate 12:00) com o BOVA11 a favor (placar de 5 min: unico recorte positivo); E1_MERCADO=0 volta a A, D e E
 SAIDA_STOP = os.getenv("SAIDA_STOP", "1") == "1"   # 17/11: aviso de saida do monitor de 5 min = devolve 2,5 ATR do melhor ponto desde a entrada; SAIDA_STOP=0 volta a linha/histograma
+
+REPIQUE_ENTRADA = os.getenv("REPIQUE_ENTRADA", "1") == "1"   # 18/11: alerta de entrada de 5 min = repique de CALL (3% sobre o fechamento de ontem, vindo da minima de 20 dias, BOVA11 a favor) nos 30 ativos; REPIQUE_ENTRADA=0 volta ao E1
+REPIQUE_MOV = float(os.getenv("REPIQUE_MOV", "3.0"))
