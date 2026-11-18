@@ -731,6 +731,58 @@ def job_diag_resultados():
         L.append(linha(f"IV {w}", [i for i in itens if i["iv"] == w], "largo"))
     messenger.send("\n".join(L))
 
+def job_diag_alertas():
+    """Comando 'alertas' (so leitura): todos os alertas de rompimento gravados desde o inicio, por semana, separando os que foram enviados dos que ficaram so registrados (RUIM, mercado no mesmo sentido, put pausado, sem opcao), com o resultado de cada um na regra de saida atual."""
+    try:
+        with database.conn() as c_:
+            rows = c_.execute("SELECT date, ticker, direction, payload FROM alerts ORDER BY date").fetchall()
+        api, cache, itens = Brapi(), {}, []
+        for r in rows:
+            p = json.loads(r["payload"]); sg = p.get("signal")
+            if not sg: continue
+            if not p.get("option"): st = "sem opção"
+            elif p.get("ruim"): st = "RUIM"
+            elif p.get("bloq_mercado"): st = "mercado"
+            elif p.get("pausado"): st = "put pausado"
+            else: st = "enviado"
+            res = None
+            try:
+                if r["ticker"] not in cache: cache[r["ticker"]] = api.history(r["ticker"], "3mo", "1d")
+                bars = [b for b in cache[r["ticker"]] if datetime.fromtimestamp(b["date"], TZ).date().isoformat() > r["date"]]
+                res = outcomes.avaliar(sg, bars)
+            except Exception as e:
+                log.warning("alertas %s: %s", r["ticker"], e)
+            d = date.fromisoformat(r["date"]); seg = d - timedelta(days=d.weekday())
+            itens.append(dict(d=r["date"], seg=seg, t=r["ticker"], dr=r["direction"], st=st, res=res))
+        sgn = lambda x: ("+" if x >= 0 else "−") + f"{abs(x):.1f}".replace(".", ",") + "%"
+        def resumo(g):
+            if not g: return "0"
+            f = [i["res"] for i in g if i["res"]]; ab = len(g) - len(f)
+            a = sum(1 for x in f if x[0] == "alvo"); sd = sum(1 for x in f if x[0] == "saida"); pz = sum(1 for x in f if x[0] == "prazo")
+            m = sum(x[2] for x in f) / len(f) if f else 0
+            return f"{len(g)} · alvo {a} · saída {sd} · prazo {pz} · abertos {ab}" + (f" · ação média {sgn(m)}" if f else "")
+        L = [f"ALERTAS DE ROMPIMENTO DESDE O INÍCIO ({len(itens)} gravados)", "Resultado na regra de saída de hoje (metade do caminho). 'Enviado' = chegou no Telegram.", ""]
+        for seg in sorted({i["seg"] for i in itens}):
+            w = [i for i in itens if i["seg"] == seg]
+            L.append(f"Semana de {seg.strftime('%d/%m')}:")
+            L.append(f"  enviados: {resumo([i for i in w if i['st'] == 'enviado'])}")
+            L.append(f"  só registro: {resumo([i for i in w if i['st'] != 'enviado'])}")
+        L += ["", "Por direção (só enviados):"]
+        for nome, dr in (("CALL", "long"), ("PUT", "short")):
+            L.append(f"  {nome}: {resumo([i for i in itens if i['st'] == 'enviado' and i['dr'] == dr])}")
+        L += ["", "Por motivo de não envio:"]
+        for st in ("sem opção", "RUIM", "mercado", "put pausado"):
+            L.append(f"  {st}: {resumo([i for i in itens if i['st'] == st])}")
+        L += ["", "Lista dos enviados:"]
+        for i in itens:
+            if i["st"] != "enviado": continue
+            x = i["res"]
+            L.append(f"{i['d'][8:]}/{i['d'][5:7]} {i['t']} {'▲' if i['dr'] == 'long' else '▼'} " + (f"{x[0]} em {x[1]}d {sgn(x[2])}" if x else "aberto"))
+        L += ["", "Os alertas de 5 min não entram aqui: ficam no placar5m."]
+        messenger.send("\n".join(L))
+    except Exception as e:
+        log.exception("alertas falhou"); messenger.send(f"alertas: erro {e}")
+
 def _replay_conf(daily, m15, t, conf, ate_dia):
     """Como _replay_vr, mas com 'conf' fechamentos M15 de confirmacao (volume minimo vigente)."""
     out, orig = {}, config.M15_CONFIRM_CLOSES
@@ -4702,7 +4754,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
