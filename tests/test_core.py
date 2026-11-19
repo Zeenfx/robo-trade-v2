@@ -348,7 +348,8 @@ def test_daily_summary(monkeypatch, tmp_path):
     sent = []
     monkeypatch.setattr(main.messenger, "send", lambda t: sent.append(t) or True)
     main.job_summary()
-    assert sent == []                                   # sem ciclos hoje: nada a dizer
+    assert len(sent) == 1 and "Nenhum ciclo" in sent[0]      # sem ciclos hoje: avisa (19/11)
+    sent.clear()
     database.save_stats("2026-10-23T10:30:00", "2026-10-23", 30, 10, 20, 0, 0)
     database.save_stats("2026-10-23T17:45:00", "2026-10-23", 30, 12, 18, 0, 0)
     main.job_summary()
