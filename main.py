@@ -4854,7 +4854,8 @@ def job_summary():
     """Fim do dia: uma mensagem curta com alertas enviados e quantos ativos tinham dado de 15 min (distingue 'sem rompimento' de 'dado incompleto')."""
     hoje = str(now().date())
     st = database.stats_for(hoje)
-    if not st:
+    if not st:   # 19/11: antes ficava em silencio; agora avisa que nao houve ciclo de 15 min gravado
+        messenger.send(f"Resumo de {now().strftime('%d/%m')}\n⚠️ Nenhum ciclo de 15 min gravado hoje: o robô não analisou os ativos. Alertas enviados: {database.count_alerts(hoje, True)}")
         return
     total = st[-1]["total"]
     melhor = max(r["analisados"] for r in st)
