@@ -3803,6 +3803,8 @@ def _vivo_repique(api, t0, tk):
     dl = api.history(tk, "5d", "5m")
     if dl and dl[-1]["date"] + 300 > t0.timestamp(): dl = dl[:-1]
     if not dl or datetime.fromtimestamp(dl[-1]["date"], TZ).date() != hoje: return
+    try: database.save_sinal_intra("R", tk, 1, dl[-1]["date"], hoje_s, dl[-1]["close"], 0)   # 19/11: grava todo repique (com ou sem mercado/opcao) para o placar medir o acerto real
+    except Exception as e: log.warning("grava repique %s: %s", tk, e)
     if tk != "BOVA11":   # mercado a favor: linha de 5 min do BOVA11 para cima
         dlb = api.history("BOVA11", "5d", "5m")
         if dlb and dlb[-1]["date"] + 300 > t0.timestamp(): dlb = dlb[:-1]
@@ -4507,6 +4509,7 @@ def _placar_5m_texto(desde=None):
     ids_e1 = set(primeiros.values())
     grupos = [(v, f"{v} ({nome})", (lambda s, v=v: s["var"] == v)) for v, nome in VARIANTES_5M.items()]
     grupos.append(("E1", "E1 (primeiro E do dia por ativo, até 12:00)", lambda s: s["id"] in ids_e1))
+    grupos.append(("R", "R (repique de CALL a 3%, os 30 ativos; é o alerta de entrada atual)", lambda s: s["var"] == "R"))
     for var, titulo, filtro in grupos:
         av = [(s, json.loads(s["res"])) for s in todos if filtro(s) and s["res"]]
         av = [(s, r) for s, r in av if not r.get("sem_dado")]
@@ -4527,7 +4530,7 @@ def _placar_5m_texto(desde=None):
     if pend: L.append(f"\n{pend} sinais ainda sem medir (dia aberto ou sem dado).")
     if not todos: L.append("Ainda não há sinais gravados.")
     L += ["", "SAÍDAS E MERCADO (só medição)", "Saída: hist = 2 barras encolhendo; linha = linha vira contra; stop = devolve 2,5 ATR do pico. 'A favor' = linha de 5 min do BOVA11 no mesmo sentido do sinal."]
-    for nome, filtro in (("Todas as regras", lambda s: True), ("E1", lambda s: s["id"] in ids_e1), ("D", lambda s: s["var"] == "D"), ("E", lambda s: s["var"] == "E")):
+    for nome, filtro in (("Todas as regras", lambda s: True), ("E1", lambda s: s["id"] in ids_e1), ("R repique", lambda s: s["var"] == "R"), ("D", lambda s: s["var"] == "D"), ("E", lambda s: s["var"] == "E")):
         av = [(s, json.loads(s["res"])) for s in todos if filtro(s) and s["res"]]
         av = [(s, r) for s, r in av if not r.get("sem_dado") and "trail" in r]
         if not av:
