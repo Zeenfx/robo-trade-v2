@@ -4051,6 +4051,8 @@ def job_gravar_opcoes(manual=False):
                 q = lambda v, p: v[min(len(v) - 1, int(p * len(v)))]
                 L.append(f"Diferença entre compra e venda (custo de ida e volta): mediana {fmt(q(sp, .5), 1)}% · pior 25% {fmt(q(sp, .75), 1)}% · pior 10% {fmt(q(sp, .9), 1)}%")
                 if liq: L.append(f"Só séries com volume e interesse aberto de 100+ ({len(liq)}): mediana {fmt(q(liq, .5), 1)}% · pior 25% {fmt(q(liq, .75), 1)}%")
+                flt = sorted(((r["ask"] - r["bid"]) / ((r["ask"] + r["bid"]) / 2) * 100 for r in ok if (r["volume"] or 0) >= config.MIN_VOLUME and (r["oi"] or 0) >= config.MIN_OPEN_INTEREST))
+                L.append(f"Séries que passam o filtro do robô (volume {config.MIN_VOLUME}+, interesse aberto {config.MIN_OPEN_INTEREST}+): {len(flt)}" + (f" · spread mediana {fmt(q(flt, .5), 1)}% · pior 25% {fmt(q(flt, .75), 1)}% · dentro de {fmt(config.MAX_SPREAD_PCT, 0)}%: {sum(1 for x in flt if x <= config.MAX_SPREAD_PCT)}" if flt else ""))
         messenger.send("\n".join(L))
     except Exception as e:
         log.exception("gravar_opcoes falhou")
