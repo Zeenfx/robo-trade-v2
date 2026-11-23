@@ -3011,6 +3011,52 @@ def _diag_histopcao():
         L.append("Nenhuma data passada devolveu séries.")
     messenger.send("\n".join(L))
 
+def job_diag_qualopcao():
+    try:
+        _diag_qualopcao()
+    except Exception as e:
+        log.exception("diag_qualopcao falhou")
+        messenger.send(f"qualopcao falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_qualopcao():
+    """Comando 'qualopcao' (so leitura): para opcoes de CALL perto do dinheiro (±10% do preco) em datas passadas, mostra quantas tem preco e de onde vem (priceSource, model, confidence, nullReason), para saber se o historico do brapi e preco negociado ou calculado."""
+    from iv_filter import is_monthly
+    from collections import Counter
+    api = Brapi(); hoje = now().date()
+    limpa = lambda x: str(x).replace("<", "").replace(">", "")
+    L = ["QUALIDADE DO PREÇO HISTÓRICO DAS OPÇÕES (PETR4 e VALE3, CALL perto do dinheiro, só leitura)"]
+    for tk in ("PETR4", "VALE3"):
+        try:
+            ex = api.expirations(tk, include_expired=True)
+        except Exception as e:
+            L.append(f"{tk}: vencimentos falhou {limpa(e)[:100]}"); continue
+        mens = sorted(e for e in ex if e < str(hoje) and is_monthly(e))[-4:-1]
+        tot = com = oi = 0; src = Counter(); mod = Counter(); nul = Counter(); conf = []; ex_rows = []
+        for e in mens:
+            dt = str(date.fromisoformat(e) - timedelta(days=35))
+            try:
+                _, an = api.analytics(tk, e, date=dt, side="call")
+            except Exception as er:
+                L.append(f"{tk} {e} em {dt}: erro {limpa(er)[:100]}"); continue
+            for a in an:
+                u, k = a.get("underlyingPrice"), a.get("strike")
+                if not u or not k or abs(k / u - 1) > 0.10: continue
+                tot += 1
+                if a.get("optionPrice"): com += 1
+                if (a.get("openInterest") or 0) > 0: oi += 1
+                src[str(a.get("priceSource"))] += 1; mod[str(a.get("model"))] += 1
+                if not a.get("optionPrice"): nul[str(a.get("nullReason"))] += 1
+                if isinstance(a.get("confidence"), (int, float)): conf.append(a["confidence"])
+                if a.get("optionPrice") and len(ex_rows) < 2:
+                    ex_rows.append({c: a.get(c) for c in ("symbol", "strike", "underlyingPrice", "optionPrice", "priceSource", "model", "confidence", "impliedVolatility", "openInterest", "lastTradeDate")})
+        L.append(f"{tk}: {tot} séries perto do dinheiro em {len(mens)} datas · com preço {com} · com contratos em aberto {oi}")
+        L.append("  origem do preço: " + limpa(dict(src)))
+        L.append("  modelo: " + limpa(dict(mod)))
+        if nul: L.append("  sem preço por: " + limpa(dict(nul)))
+        if conf: L.append(f"  confiança: mín {min(conf):.2f} · mediana {sorted(conf)[len(conf)//2]:.2f} · máx {max(conf):.2f}")
+        for r in ex_rows: L.append("  exemplo: " + limpa(r)[:300])
+    messenger.send("\n".join(L))
+
 LISTA_DIARIA = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BBDC4"]
 # 17/11: o aviso ao vivo e a confirmacao das 18:10 da regra diaria (so CALL) cobrem o universo inteiro (teste de 5 anos: a vantagem aparece nos ~30 ativos); fora dos 6 principais, sem opcao liquida fica so registrado
 def _lista_diario_vivo():
@@ -5014,7 +5060,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"qualopcao": job_diag_qualopcao, "histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
