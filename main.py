@@ -3065,14 +3065,14 @@ def job_diag_realopcao():
         messenger.send(f"realopcao falhou: {type(e).__name__}: {str(e)[:200]}")
 
 def _diag_realopcao():
-    """Comando 'realopcao' (so leitura): CALLs da regra diaria (linha + MACD) dos ultimos 2 anos com PRECO REAL DE FECHAMENTO da opcao (brapi analytics por data): entra na opcao de delta mais perto de 0,5 do mensal com 25+ dias no fechamento do sinal e sai no encolher do histograma e em 5 pregoes, tambem com preco real. Custo de 0%, 2,5% e 5% por lado. Para apos 25 minutos e mostra o parcial."""
+    """Comando 'realopcao' (so leitura): CALLs da regra diaria (linha + MACD) dos ultimos 2 anos com PRECO REAL DE FECHAMENTO da opcao (brapi analytics por data): entra na opcao de delta mais perto de 0,5 do mensal com 25+ dias no fechamento do sinal e sai no encolher do histograma e em 5 pregoes, tambem com preco real. Controle: mesma entrada e saida em 5 pregoes em dias SEM sinal (1 a cada 40 pregoes por ativo). Custo de 0%, 2,5% e 5% por lado. Percentis e peso dos 5 maiores ganhos. Para apos 45 minutos e mostra o parcial."""
     from messenger import fmt
     from iv_filter import is_monthly
     import time as _t
-    t_ini = _t.time(); LIM = 25 * 60
+    t_ini = _t.time(); LIM = 45 * 60
     api = Brapi(); hoje = now().date(); corte = hoje - timedelta(days=730)
     dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
-    cache_an, cache_ex = {}, {}
+    cache_an, cache_ex, dados = {}, {}, {}
     def serie(tk, exp, d):
         k = (tk, exp, d)
         if k not in cache_an:
@@ -3080,12 +3080,30 @@ def _diag_realopcao():
             except Exception as e:
                 log.warning("realopcao %s %s %s: %s", tk, exp, d, e); cache_an[k] = None
         return cache_an[k]
-    R = {"hist": [], "d5": [], "ativo_hist": [], "ativo_d5": []}
-    n_tk = n_sig = n_ok = faltou_entrada = faltou_saida = cruza = 0; dtes = []; deltas = []; parcial = False
+    C = dict(sinais=0, entrada=0, saida=0, cruza=0)
+    def entra(tk, dl, i, ks):
+        """Compra a opcao de delta ~0,5 no fechamento de i e devolve (razoes de saida em ks, delta, dias) ou motivo da falha."""
+        d0 = dia_de(dl[i])
+        exps = [e for e in cache_ex[tk] if (date.fromisoformat(e) - d0).days >= 25]
+        if not exps: return "entrada", None
+        exp = min(exps); ed = date.fromisoformat(exp)
+        if any(dia_de(dl[k]) >= ed for k in ks): return "cruza", None
+        cand = [a for a in (serie(tk, exp, d0) or []) if a.get("optionPrice") and (a.get("openInterest") or 0) > 0 and a.get("delta") is not None and 0.35 <= a["delta"] <= 0.65]
+        if not cand: return "entrada", None
+        a0 = min(cand, key=lambda a: abs(a["delta"] - 0.5)); sym = a0["symbol"]; P0 = a0["optionPrice"]
+        rs = []
+        for k in ks:
+            sx = serie(tk, exp, dia_de(dl[k]))
+            m = next((a for a in (sx or []) if a.get("symbol") == sym and a.get("optionPrice")), None)
+            if not m: return "saida", None
+            rs.append(m["optionPrice"] / P0)
+        return "ok", (rs, a0["delta"], (ed - d0).days)
+    R = {"hist": [], "d5": [], "ativo_hist": [], "ativo_d5": [], "ctl": [], "ativo_ctl": []}
+    deltas, dtes = [], []; n_tk = 0; parcial = False; Cc = dict(n=0, entrada=0, saida=0, cruza=0)
     for tk in [t for t in config.UNIVERSE if t != "BOVA11"]:
         if _t.time() - t_ini > LIM: parcial = True; break
         try:
-            dl = api.history(tk, "5y", "1d"); n_tk += 1; cache_ex[tk] = [e for e in api.expirations(tk, include_expired=True) if is_monthly(e)]
+            dl = api.history(tk, "5y", "1d"); cache_ex[tk] = [e for e in api.expirations(tk, include_expired=True) if is_monthly(e)]; n_tk += 1
         except Exception as e:
             log.warning("realopcao %s: %s", tk, e); continue
         if len(dl) < 300: continue
@@ -3093,51 +3111,56 @@ def _diag_realopcao():
         salto = [0] + [1 if abs(cl[i] / cl[i - 1] - 1) > 0.25 else 0 for i in range(1, N)]
         pref = [0]
         for x in salto: pref.append(pref[-1] + x)
-        di = _supertrend_dir(dl); hi = _macd_hist(cl); ult = -99
+        di = _supertrend_dir(dl); hi = _macd_hist(cl); ult = -99; sig_idx = set()
         for i in range(60, N - 32):
             fl = di[i] == 1 and di[i - 1] == -1; cr = hi[i] > 0 >= hi[i - 1]
             fl_rec = any(di[k] == 1 and di[k - 1] == -1 for k in range(i - 2, i + 1))
             cr_rec = any(hi[k] > 0 >= hi[k - 1] for k in range(i - 2, i + 1))
             if not (((fl and cr_rec) or (cr and fl_rec)) and i - ult >= 5): continue
-            ult = i
-            d0 = dia_de(dl[i])
-            if d0 < corte or pref[i + 33] - pref[i - 1] > 0: continue
-            n_sig += 1
+            ult = i; sig_idx.add(i)
+            if dia_de(dl[i]) < corte or pref[i + 33] - pref[i - 1] > 0: continue
+            C["sinais"] += 1
             k_s = i + 30
             for k in range(i + 1, i + 31):
                 if hi[k] < hi[k - 1]: k_s = k; break
-            exps = [e for e in cache_ex[tk] if (date.fromisoformat(e) - d0).days >= 25]
-            if not exps: faltou_entrada += 1; continue
-            exp = min(exps); ed = date.fromisoformat(exp)
-            if dia_de(dl[k_s]) >= ed or dia_de(dl[i + 5]) >= ed: cruza += 1; continue
-            s0 = serie(tk, exp, d0)
-            cand = [a for a in (s0 or []) if a.get("optionPrice") and (a.get("openInterest") or 0) > 0 and a.get("delta") is not None and 0.35 <= a["delta"] <= 0.65]
-            if not cand: faltou_entrada += 1; continue
-            a0 = min(cand, key=lambda a: abs(a["delta"] - 0.5)); sym = a0["symbol"]; P0 = a0["optionPrice"]
-            def preco(k):
-                sx = serie(tk, exp, dia_de(dl[k]))
-                m = next((a for a in (sx or []) if a.get("symbol") == sym and a.get("optionPrice")), None)
-                return m["optionPrice"] if m else None
-            p_h, p_5 = preco(k_s), preco(i + 5)
-            if p_h is None or p_5 is None: faltou_saida += 1; continue
-            n_ok += 1; dtes.append((ed - d0).days); deltas.append(a0["delta"])
-            R["hist"].append(p_h / P0); R["d5"].append(p_5 / P0)
+            st, r = entra(tk, dl, i, [k_s, i + 5])
+            if st != "ok": C[st] += 1; continue
+            R["hist"].append(r[0][0]); R["d5"].append(r[0][1]); deltas.append(r[1]); dtes.append(r[2])
             R["ativo_hist"].append(cl[k_s] / cl[i]); R["ativo_d5"].append(cl[i + 5] / cl[i])
+        dados[tk] = (dl, cl, sig_idx, pref)
+    # controle: dias sem sinal (nem nos 5 pregoes anteriores), 1 a cada 40 pregoes
+    for tk, (dl, cl, sig_idx, pref) in dados.items():
+        if _t.time() - t_ini > LIM: parcial = True; break
+        for i in range(60, len(dl) - 32, 40):
+            if dia_de(dl[i]) < corte or pref[i + 33] - pref[i - 1] > 0 or any(k in sig_idx for k in range(i - 5, i + 1)): continue
+            Cc["n"] += 1
+            st, r = entra(tk, dl, i, [i + 5])
+            if st != "ok": Cc[st] += 1; continue
+            R["ctl"].append(r[0][0]); R["ativo_ctl"].append(cl[i + 5] / cl[i])
+    n_ok = len(R["d5"])
     if not n_ok:
-        messenger.send(f"realopcao: nenhum sinal completo ({n_tk} ativos lidos, {n_sig} sinais, {faltou_entrada} sem preço na entrada, {faltou_saida} sem preço na saída, {cruza} cruzam o vencimento)"); return
+        messenger.send(f"realopcao: nenhum sinal completo ({n_tk} ativos lidos, {C['sinais']} sinais, {C['entrada']} sem preço na entrada, {C['saida']} sem preço na saída, {C['cruza']} cruzam o vencimento)"); return
     med = lambda v: sorted(v)[len(v) // 2]; avg = lambda v: sum(v) / len(v)
+    pct = lambda v, q: sorted(v)[min(len(v) - 1, int(q * len(v)))]
     sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 0) + "%"
-    L = ["CALL DA REGRA DIÁRIA COM PREÇO REAL DE FECHAMENTO DA OPÇÃO (2 anos, só leitura)",
-         f"{n_ok} sinais completos de {n_sig} (sem preço na entrada {faltou_entrada} · na saída {faltou_saida} · cruzam o vencimento {cruza})" + (" · PARCIAL (tempo)" if parcial else ""),
-         f"Opção: delta mais perto de 0,5 (médio {fmt(avg(deltas), 2)}), mensal com 25+ dias (médio {fmt(avg(dtes), 0)} dias na entrada). Compra no fechamento do sinal.", ""]
-    for nome, ch, ca in (("Sair no encolher do histograma", "hist", "ativo_hist"), ("Sair em 5 pregões", "d5", "ativo_d5")):
-        L.append(nome + ":")
-        for c in (0.0, 0.025, 0.05):
-            rs = [(p * (1 - c) / (1 + c) - 1) * 100 for p in R[ch]]
-            L.append(f"  custo {fmt(c * 100, 1)}% por lado: média {sg(avg(rs))} · mediana {sg(med(rs))} · positivos {fmt(100 * sum(1 for x in rs if x > 0) / len(rs), 0)}%")
-        ra = [(x - 1) * 100 for x in R[ca]]
-        L.append(f"  o ativo no mesmo período: média {sg(avg(ra))} · mediana {sg(med(ra))}")
-    L.append("\nPreço de fechamento de cada dia (sem compra e venda); opção que não negociou no dia pode ter preço velho.")
+    cst = 0.025
+    liq = lambda v, c: [(p * (1 - c) / (1 + c) - 1) * 100 for p in v]
+    def linha(nome, v):
+        rs = liq(v, cst); pos = sorted([x for x in rs if x > 0], reverse=True)
+        top5 = 100 * sum(pos[:5]) / sum(pos) if pos else 0
+        return (f"  {nome} ({len(rs)}): média {sg(avg(rs))} · pior 10% {sg(pct(rs, 0.1))} · mediana {sg(med(rs))} · melhor 10% {sg(pct(rs, 0.9))} · positivos {fmt(100 * sum(1 for x in rs if x > 0) / len(rs), 0)}% · os 5 maiores ganhos são {fmt(top5, 0)}% dos ganhos")
+    L = ["CALL DA REGRA DIÁRIA COM PREÇO REAL DE FECHAMENTO DA OPÇÃO + CONTROLE (2 anos, só leitura)",
+         f"Sinais completos {n_ok} de {C['sinais']} (sem preço na entrada {C['entrada']} · na saída {C['saida']} · cruzam o vencimento {C['cruza']})" + (" · PARCIAL (tempo)" if parcial else ""),
+         f"Controle (dias sem sinal): {len(R['ctl'])} de {Cc['n']} (sem preço na entrada {Cc['entrada']} · na saída {Cc['saida']} · cruzam {Cc['cruza']})",
+         f"Opção: delta mais perto de 0,5 (médio {fmt(avg(deltas), 2)}), mensal com 25+ dias ({fmt(avg(dtes), 0)} dias em média). Custo de 2,5% por lado nas linhas abaixo.", "",
+         "Sair em 5 pregões:", linha("sinal", R["d5"])]
+    if R["ctl"]: L.append(linha("controle", R["ctl"]))
+    L.append(f"  ativo em 5 pregões: sinal {sg(avg([(x - 1) * 100 for x in R['ativo_d5']]))} · controle {sg(avg([(x - 1) * 100 for x in R['ativo_ctl']])) if R['ctl'] else 'sem dado'}")
+    L += ["", "Sair no encolher do histograma:", linha("sinal", R["hist"]),
+          f"  ativo no mesmo período: {sg(avg([(x - 1) * 100 for x in R['ativo_hist']]))}", "", "Média do sinal em 5 pregões por custo:"]
+    for c in (0.0, 0.025, 0.05):
+        rs = liq(R["d5"], c); L.append(f"  {fmt(c * 100, 1)}% por lado: média {sg(avg(rs))} · mediana {sg(med(rs))}")
+    L.append("\nFechamento de cada dia, sem compra e venda; opção que não negociou no dia pode ter preço velho.")
     messenger.send("\n".join(L))
 
 LISTA_DIARIA = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BBDC4"]
