@@ -3081,11 +3081,11 @@ def _diag_realopcao():
                 log.warning("realopcao %s %s %s: %s", tk, exp, d, e); cache_an[k] = None
         return cache_an[k]
     R = {"hist": [], "d5": [], "ativo_hist": [], "ativo_d5": []}
-    n_sig = n_ok = faltou_entrada = faltou_saida = cruza = 0; dtes = []; deltas = []; parcial = False
+    n_tk = n_sig = n_ok = faltou_entrada = faltou_saida = cruza = 0; dtes = []; deltas = []; parcial = False
     for tk in [t for t in config.UNIVERSE if t != "BOVA11"]:
         if _t.time() - t_ini > LIM: parcial = True; break
         try:
-            dl = api.history(tk, "3y", "1d"); cache_ex[tk] = [e for e in api.expirations(tk, include_expired=True) if is_monthly(e)]
+            dl = api.history(tk, "5y", "1d"); n_tk += 1; cache_ex[tk] = [e for e in api.expirations(tk, include_expired=True) if is_monthly(e)]
         except Exception as e:
             log.warning("realopcao %s: %s", tk, e); continue
         if len(dl) < 300: continue
@@ -3124,7 +3124,7 @@ def _diag_realopcao():
             R["hist"].append(p_h / P0); R["d5"].append(p_5 / P0)
             R["ativo_hist"].append(cl[k_s] / cl[i]); R["ativo_d5"].append(cl[i + 5] / cl[i])
     if not n_ok:
-        messenger.send(f"realopcao: nenhum sinal completo ({n_sig} sinais, {faltou_entrada} sem preço na entrada, {faltou_saida} sem preço na saída, {cruza} cruzam o vencimento)"); return
+        messenger.send(f"realopcao: nenhum sinal completo ({n_tk} ativos lidos, {n_sig} sinais, {faltou_entrada} sem preço na entrada, {faltou_saida} sem preço na saída, {cruza} cruzam o vencimento)"); return
     med = lambda v: sorted(v)[len(v) // 2]; avg = lambda v: sum(v) / len(v)
     sg = lambda x: ("+" if x >= 0 else "−") + fmt(abs(x), 0) + "%"
     L = ["CALL DA REGRA DIÁRIA COM PREÇO REAL DE FECHAMENTO DA OPÇÃO (2 anos, só leitura)",
