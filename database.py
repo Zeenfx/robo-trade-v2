@@ -141,6 +141,14 @@ def has_iv_on(ticker, date):
     with conn() as c_:
         return c_.execute("SELECT 1 FROM iv_history WHERE ticker=? AND date=?", (ticker, date)).fetchone() is not None
 
+def incr_meta(k):
+    """Soma 1 a um contador guardado em meta (so contagem para o status)."""
+    with conn() as c_:
+        r = c_.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+        n = (int(r["v"]) if r and str(r["v"]).isdigit() else 0) + 1
+        c_.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, str(n)))
+    return n
+
 def set_meta(k, v):
     with conn() as c_:
         c_.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))

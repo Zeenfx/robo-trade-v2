@@ -4161,7 +4161,7 @@ def _vivo5m(api, t0, tk):
                 if motivo:
                     p0 = float(p_s); mov = dr * (cl[-1] / p0 - 1) * 100
                     messenger.send(f"🔔 <b>{tk} · atenção para sair da {'CALL' if dr == 1 else 'PUT'}</b>\nNo gráfico de 5 min: {motivo}.\n{tk} em {fmt(cl[-1])} (entrada em {fmt(p0)}: {'+' if mov >= 0 else '−'}{fmt(abs(mov), 2)}% a favor).")
-                    database.set_meta(f"{P}:aberta", "")
+                    database.set_meta(f"{P}:aberta", ""); database.incr_meta(f"cnt:saida:{hoje_s}")
     if config.REPIQUE_ENTRADA: return
     # entrada
     todos_s = _sinais_5m(dl)
@@ -4264,6 +4264,7 @@ def _vivo_repique(api, t0, tk):
     if messenger.send("\n".join(L)):
         P = "bovaint" if tk == "BOVA11" else f"bovaint:{tk}"
         database.set_meta(f"{P}:aberta", f"{hoje_s}|1|{ts}|{price}")   # liga o aviso de saida (2,5 ATR do pico)
+        database.incr_meta(f"cnt:repique:{hoje_s}")
 
 def job_bova_vivo():
     """A cada 5 min no pregao: monitor de 5 min do BOVA11 e das 5 acoes do diario."""
@@ -5291,14 +5292,14 @@ def job_summary():
     hoje = str(now().date())
     st = database.stats_for(hoje)
     if not st:   # 19/11: antes ficava em silencio; agora avisa que nao houve ciclo de 15 min gravado
-        messenger.send(f"Resumo de {now().strftime('%d/%m')}\n⚠️ Nenhum ciclo de 15 min gravado hoje: o robô não analisou os ativos. Alertas enviados: {database.count_alerts(hoje, True)}")
+        messenger.send(f"Resumo de {now().strftime('%d/%m')}\n⚠️ Nenhum ciclo de 15 min gravado hoje: o robô não analisou os ativos. Alertas enviados: {_alertas_hoje_txt(str(hoje))}")
         return
     total = st[-1]["total"]
     melhor = max(r["analisados"] for r in st)
     ultimo = st[-1]["analisados"]
     erros = sum(r["erros"] for r in st)
     L = [f"Resumo de {now().strftime('%d/%m')}",
-         f"Alertas enviados: {database.count_alerts(hoje, True)}",
+         f"Alertas enviados: {_alertas_hoje_txt(str(hoje))}",
          f"Ativos com dado de 15 min: até {melhor}/{total} (último ciclo: {ultimo}/{total})"]
     if erros:
         L.append(f"Erros de dados: {erros}")
@@ -5425,6 +5426,11 @@ def job_morning():
         log.warning("Linha diaria do bom dia: %s", e)
     messenger.send("\n".join(L))
 
+def _alertas_hoje_txt(hoje):
+    """Alertas do dia: rompimento (tabela alerts) mais repique e aviso de saida (contadores; contam desde 23/11 13:05)."""
+    r, s = int(database.get_meta(f"cnt:repique:{hoje}") or 0), int(database.get_meta(f"cnt:saida:{hoje}") or 0)
+    return f"{database.count_alerts(hoje, True)} rompimento · {r} repique · {s} saída"
+
 def job_heartbeat():
     """13:00: prova de vida (ciclos feitos, cobertura de dados e alertas do dia)."""
     hoje = str(now().date())
@@ -5434,7 +5440,7 @@ def job_heartbeat():
         return
     lag = database.get_meta("lag_last")
     atraso = f"\nAtraso dos dados: ~{lag} min" + (" ⚠️" if lag and int(lag) > 20 else "") if lag else ""
-    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}{atraso}\nAlertas hoje: {database.count_alerts(hoje, True)}")
+    messenger.send(f"{now().strftime('%H:%M')} · robô ativo\nCiclos: {len(st)} · ativos com dado: {st[-1]['analisados']}/{st[-1]['total']}{atraso}\nAlertas hoje: {_alertas_hoje_txt(hoje)}")
 
 def job_status():
     d, wl = screener.watchlist()
