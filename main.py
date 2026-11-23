@@ -4005,6 +4005,60 @@ def job_gravar_candles(manual=False):
 def job_gravar_candles_manual():
     job_gravar_candles(True)
 
+def _grava_opcoes(api, hoje):
+    """Cotacao real (compra, venda, ultimo, volume, interesse aberto, IV, delta) das series de CALL e PUT com delta de 0,15 a 0,85 dos 2 vencimentos mensais mais proximos com 10 a 75 dias, em todos os ativos do robo. Retorna (linhas gravadas, ativos com dado, erros)."""
+    from iv_filter import is_monthly, is_weekly_symbol
+    total, tks, erros = 0, 0, []
+    for tk in _tickers_5m():
+        try:
+            exps = sorted(e for e in api.expirations(tk) if is_monthly(e) and 10 <= (date.fromisoformat(e) - hoje).days <= 75)[:2]
+            rows = []
+            for e in exps:
+                for side in ("call", "put"):
+                    _, an = api.analytics(tk, e, side=side)
+                    d_ch, ch = api.chain(tk, e, side=side)
+                    book = {s["symbol"]: s for s in ch}
+                    for a in an:
+                        s = book.get(a["symbol"])
+                        if not s or a.get("delta") is None or is_weekly_symbol(a["symbol"]) or not (0.15 <= abs(a["delta"]) <= 0.85): continue
+                        rows.append(dict(dia=str(d_ch or hoje), ticker=tk, symbol=a["symbol"], side=side, exp=e, strike=a.get("strike"), bid=s.get("bid"), ask=s.get("ask"), last=s.get("close"),
+                                         volume=s.get("volume"), oi=s.get("openInterest"), iv=a.get("impliedVolatility"), delta=a["delta"], spot=a.get("underlyingPrice")))
+            if rows: total += database.save_opcoes_dia(rows); tks += 1
+        except Exception as e:
+            erros.append(f"{tk}: {str(e)[:60]}")
+    return total, tks, erros
+
+def job_gravar_opcoes(manual=False):
+    """Todo dia depois do fechamento guarda a cotacao real das opcoes (so registro; nao altera alerta). O comando 'cotacoes' roda na hora e mostra o custo real (compra e venda) das series de delta 0,4 a 0,6."""
+    try:
+        hoje = now().date()
+        total, tks, erros = _grava_opcoes(Brapi(), hoje)
+        log.info("Cotacoes de opcoes guardadas: %d linhas, %d ativos, %d erros", total, tks, len(erros))
+        if not manual:
+            if erros: log.warning("Cotacoes com erro: %s", "; ".join(erros))
+            return
+        from messenger import fmt
+        res = database.opcoes_dia_resumo()
+        L = [f"Cotações de opções guardadas agora: {total} séries em {tks} ativos." + (f" Erros: {len(erros)} ({'; '.join(erros[:3])})" if erros else "")]
+        if res: L.append("Dias guardados: " + " · ".join(f"{r['dia'][8:]}/{r['dia'][5:7]} ({r['n']})" for r in res[-8:]))
+        if res:
+            linhas = [r for r in database.opcoes_dia_linhas(res[-1]["dia"]) if 0.4 <= abs(r["delta"]) <= 0.6]
+            ok = [r for r in linhas if (r["bid"] or 0) > 0 and (r["ask"] or 0) >= (r["bid"] or 0)]
+            L.append(f"Séries de delta 0,4 a 0,6 no último dia: {len(linhas)}, com compra e venda: {len(ok)}")
+            if ok:
+                sp = sorted((r["ask"] - r["bid"]) / ((r["ask"] + r["bid"]) / 2) * 100 for r in ok)
+                liq = sorted(((r["ask"] - r["bid"]) / ((r["ask"] + r["bid"]) / 2) * 100 for r in ok if (r["volume"] or 0) >= 100 and (r["oi"] or 0) >= 100))
+                q = lambda v, p: v[min(len(v) - 1, int(p * len(v)))]
+                L.append(f"Diferença entre compra e venda (custo de ida e volta): mediana {fmt(q(sp, .5), 1)}% · pior 25% {fmt(q(sp, .75), 1)}% · pior 10% {fmt(q(sp, .9), 1)}%")
+                if liq: L.append(f"Só séries com volume e interesse aberto de 100+ ({len(liq)}): mediana {fmt(q(liq, .5), 1)}% · pior 25% {fmt(q(liq, .75), 1)}%")
+        messenger.send("\n".join(L))
+    except Exception as e:
+        log.exception("gravar_opcoes falhou")
+        if manual: messenger.send(f"cotacoes falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def job_gravar_opcoes_manual():
+    job_gravar_opcoes(True)
+
 def _candle_hoje_5m(api, t, hoje):
     """Candle diario de hoje montado com os candles de 5 min (abertura, maxima, minima, ultimo preco). None se ainda nao ha."""
     h5 = [b for b in api.history(t, "5d", "5m") if datetime.fromtimestamp(b["date"], TZ).date() == hoje]
@@ -5183,7 +5237,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"realopcao": job_diag_realopcao, "realopcao5": job_diag_realopcao5, "qualopcao": job_diag_qualopcao, "histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"cotacoes": job_gravar_opcoes_manual, "realopcao": job_diag_realopcao, "realopcao5": job_diag_realopcao5, "qualopcao": job_diag_qualopcao, "histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
@@ -5427,6 +5481,7 @@ def serve():
     s.add_job(_util(job_placar_5m), "cron", day_of_week=wk, hour=18, minute=35, id="placar_5m", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar_5m_semanal), "cron", day_of_week="fri", hour=18, minute=40, id="placar_5m_semanal", misfire_grace_time=3600, coalesce=True)
     s.add_job(job_gravar_candles, "date", run_date=now() + timedelta(seconds=90), id="gravar_candles_boot")
+    s.add_job(_util(job_gravar_opcoes), "cron", day_of_week=wk, hour=18, minute=25, id="gravar_opcoes", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_bova_diario), "cron", day_of_week=wk, hour=18, minute=10, id="bova_diario", misfire_grace_time=3600, coalesce=True)
     s.add_job(_util(job_placar), "cron", day_of_week=wk, hour=18, minute=45, id="placar", misfire_grace_time=3600, coalesce=True)
     if now().date() == date(2026, 10, 30):   # reenvio unico da abertura de 30/10 ja no formato novo

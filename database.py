@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS shadow_signals(date TEXT, ticker TEXT, direction TEXT
 CREATE TABLE IF NOT EXISTS intraday_stats(ts TEXT, date TEXT, total INTEGER, analisados INTEGER, sem_dado INTEGER, erros INTEGER, sinais INTEGER);
 CREATE TABLE IF NOT EXISTS alerts(date TEXT, ticker TEXT, direction TEXT, ts TEXT, payload TEXT, PRIMARY KEY(date,ticker,direction));
 CREATE TABLE IF NOT EXISTS candles_intra(ticker TEXT, tf TEXT, ts INTEGER, o REAL, h REAL, l REAL, c REAL, v REAL, PRIMARY KEY(ticker,tf,ts));
+CREATE TABLE IF NOT EXISTS opcoes_dia(dia TEXT, ticker TEXT, symbol TEXT, side TEXT, exp TEXT, strike REAL, bid REAL, ask REAL, last REAL, volume REAL, oi REAL, iv REAL, delta REAL, spot REAL, PRIMARY KEY(dia,symbol));
 CREATE TABLE IF NOT EXISTS sinais_intra(id INTEGER PRIMARY KEY AUTOINCREMENT, var TEXT, ticker TEXT, dir INTEGER, ts INTEGER, dia TEXT, preco REAL, simet REAL, res TEXT, UNIQUE(var,ticker,dir,ts));
 """
 
@@ -204,6 +205,23 @@ def save_candles(ticker, tf, rows):
 def candles_resumo():
     with conn() as c_:
         return [dict(x) for x in c_.execute("SELECT ticker, tf, COUNT(*) n, MIN(ts) a, MAX(ts) b FROM candles_intra GROUP BY ticker, tf ORDER BY ticker").fetchall()]
+
+
+def save_opcoes_dia(rows):
+    """Guarda a cotacao real das opcoes do dia (REPLACE: uma rodada manual durante o pregao e trocada pela das 18:25). Retorna quantas linhas."""
+    with conn() as c_:
+        for r in rows:
+            c_.execute("INSERT OR REPLACE INTO opcoes_dia VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (r["dia"], r["ticker"], r["symbol"], r["side"], r["exp"], r["strike"], r["bid"], r["ask"], r["last"], r["volume"], r["oi"], r["iv"], r["delta"], r["spot"]))
+    return len(rows)
+
+def opcoes_dia_resumo():
+    with conn() as c_:
+        return [dict(x) for x in c_.execute("SELECT dia, COUNT(*) n, COUNT(DISTINCT ticker) tk FROM opcoes_dia GROUP BY dia ORDER BY dia").fetchall()]
+
+def opcoes_dia_linhas(dia):
+    with conn() as c_:
+        return [dict(x) for x in c_.execute("SELECT * FROM opcoes_dia WHERE dia=?", (dia,)).fetchall()]
 
 
 def save_sinal_intra(var, ticker, dr, ts, dia, preco, simet):
