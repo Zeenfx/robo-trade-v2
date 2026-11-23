@@ -3064,13 +3064,20 @@ def job_diag_realopcao():
         log.exception("diag_realopcao falhou")
         messenger.send(f"realopcao falhou: {type(e).__name__}: {str(e)[:200]}")
 
-def _diag_realopcao():
-    """Comando 'realopcao' (so leitura): CALLs da regra diaria (linha + MACD) dos ultimos 2 anos com PRECO REAL DE FECHAMENTO da opcao (brapi analytics por data): entra na opcao de delta mais perto de 0,5 do mensal com 25+ dias no fechamento do sinal e sai no encolher do histograma e em 5 pregoes, tambem com preco real. Controle: mesma entrada e saida em 5 pregoes em dias SEM sinal (1 a cada 40 pregoes por ativo). Custo de 0%, 2,5% e 5% por lado. Percentis e peso dos 5 maiores ganhos. Para apos 45 minutos e mostra o parcial."""
+def job_diag_realopcao5():
+    try:
+        _diag_realopcao(5)
+    except Exception as e:
+        log.exception("diag_realopcao5 falhou")
+        messenger.send(f"realopcao5 falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_realopcao(anos=2):
+    """Comando 'realopcao' (anos=2) e 'realopcao5' (anos=5, com resultado por ano) (so leitura): CALLs da regra diaria (linha + MACD) dos ultimos 2 anos com PRECO REAL DE FECHAMENTO da opcao (brapi analytics por data): entra na opcao de delta mais perto de 0,5 do mensal com 25+ dias no fechamento do sinal e sai no encolher do histograma e em 5 pregoes, tambem com preco real. Controle: mesma entrada e saida em 5 pregoes em dias SEM sinal (1 a cada 40 pregoes por ativo). Custo de 0%, 2,5% e 5% por lado. Percentis e peso dos 5 maiores ganhos. Para apos 45 minutos e mostra o parcial."""
     from messenger import fmt
     from iv_filter import is_monthly
     import time as _t
     t_ini = _t.time(); LIM = 45 * 60
-    api = Brapi(); hoje = now().date(); corte = hoje - timedelta(days=730)
+    api = Brapi(); hoje = now().date(); corte = hoje - timedelta(days=365 * anos if anos != 2 else 730)
     dia_de = lambda c: datetime.fromtimestamp(c["date"], TZ).date()
     cache_an, cache_ex, dados = {}, {}, {}
     def serie(tk, exp, d):
@@ -3098,7 +3105,7 @@ def _diag_realopcao():
             if not m: return "saida", None
             rs.append(m["optionPrice"] / P0)
         return "ok", (rs, a0["delta"], (ed - d0).days)
-    R = {"hist": [], "d5": [], "ativo_hist": [], "ativo_d5": [], "ctl": [], "ativo_ctl": []}
+    R = {"hist": [], "d5": [], "ativo_hist": [], "ativo_d5": [], "ctl": [], "ativo_ctl": [], "ano_d5": [], "ano_ctl": []}
     deltas, dtes = [], []; n_tk = 0; parcial = False; Cc = dict(n=0, entrada=0, saida=0, cruza=0)
     for tk in [t for t in config.UNIVERSE if t != "BOVA11"]:
         if _t.time() - t_ini > LIM: parcial = True; break
@@ -3126,7 +3133,7 @@ def _diag_realopcao():
             st, r = entra(tk, dl, i, [k_s, i + 5])
             if st != "ok": C[st] += 1; continue
             R["hist"].append(r[0][0]); R["d5"].append(r[0][1]); deltas.append(r[1]); dtes.append(r[2])
-            R["ativo_hist"].append(cl[k_s] / cl[i]); R["ativo_d5"].append(cl[i + 5] / cl[i])
+            R["ativo_hist"].append(cl[k_s] / cl[i]); R["ativo_d5"].append(cl[i + 5] / cl[i]); R["ano_d5"].append(dia_de(dl[i]).year)
         dados[tk] = (dl, cl, sig_idx, pref)
     # controle: dias sem sinal (nem nos 5 pregoes anteriores), 1 a cada 40 pregoes
     for tk, (dl, cl, sig_idx, pref) in dados.items():
@@ -3136,7 +3143,7 @@ def _diag_realopcao():
             Cc["n"] += 1
             st, r = entra(tk, dl, i, [i + 5])
             if st != "ok": Cc[st] += 1; continue
-            R["ctl"].append(r[0][0]); R["ativo_ctl"].append(cl[i + 5] / cl[i])
+            R["ctl"].append(r[0][0]); R["ativo_ctl"].append(cl[i + 5] / cl[i]); R["ano_ctl"].append(dia_de(dl[i]).year)
     n_ok = len(R["d5"])
     if not n_ok:
         messenger.send(f"realopcao: nenhum sinal completo ({n_tk} ativos lidos, {C['sinais']} sinais, {C['entrada']} sem preço na entrada, {C['saida']} sem preço na saída, {C['cruza']} cruzam o vencimento)"); return
@@ -3149,7 +3156,7 @@ def _diag_realopcao():
         rs = liq(v, cst); pos = sorted([x for x in rs if x > 0], reverse=True)
         top5 = 100 * sum(pos[:5]) / sum(pos) if pos else 0
         return (f"  {nome} ({len(rs)}): média {sg(avg(rs))} · pior 10% {sg(pct(rs, 0.1))} · mediana {sg(med(rs))} · melhor 10% {sg(pct(rs, 0.9))} · positivos {fmt(100 * sum(1 for x in rs if x > 0) / len(rs), 0)}% · os 5 maiores ganhos são {fmt(top5, 0)}% dos ganhos")
-    L = ["CALL DA REGRA DIÁRIA COM PREÇO REAL DE FECHAMENTO DA OPÇÃO + CONTROLE (2 anos, só leitura)",
+    L = [f"CALL DA REGRA DIÁRIA COM PREÇO REAL DE FECHAMENTO DA OPÇÃO + CONTROLE ({anos} anos, só leitura)",
          f"Sinais completos {n_ok} de {C['sinais']} (sem preço na entrada {C['entrada']} · na saída {C['saida']} · cruzam o vencimento {C['cruza']})" + (" · PARCIAL (tempo)" if parcial else ""),
          f"Controle (dias sem sinal): {len(R['ctl'])} de {Cc['n']} (sem preço na entrada {Cc['entrada']} · na saída {Cc['saida']} · cruzam {Cc['cruza']})",
          f"Opção: delta mais perto de 0,5 (médio {fmt(avg(deltas), 2)}), mensal com 25+ dias ({fmt(avg(dtes), 0)} dias em média). Custo de 2,5% por lado nas linhas abaixo.", "",
@@ -3160,6 +3167,16 @@ def _diag_realopcao():
           f"  ativo no mesmo período: {sg(avg([(x - 1) * 100 for x in R['ativo_hist']]))}", "", "Média do sinal em 5 pregões por custo:"]
     for c in (0.0, 0.025, 0.05):
         rs = liq(R["d5"], c); L.append(f"  {fmt(c * 100, 1)}% por lado: média {sg(avg(rs))} · mediana {sg(med(rs))}")
+    if anos > 2:
+        L += ["", "Por ano, sair em 5 pregões (custo 2,5% por lado): mediana · positivos · ativo em média"]
+        for y in sorted(set(R["ano_d5"]) | set(R["ano_ctl"])):
+            def res(rs, at, anosl):
+                ix = [j for j, a in enumerate(anosl) if a == y]
+                if not ix: return "sem dado"
+                v = liq([rs[j] for j in ix], cst)
+                return f"{len(ix)} · mediana {sg(med(v))} · positivos {fmt(100 * sum(1 for x in v if x > 0) / len(v), 0)}% · ativo {sg(avg([(at[j] - 1) * 100 for j in ix]))}"
+            L.append(f"  {y} sinal: " + res(R["d5"], R["ativo_d5"], R["ano_d5"]))
+            L.append(f"  {y} controle: " + res(R["ctl"], R["ativo_ctl"], R["ano_ctl"]))
     L.append("\nFechamento de cada dia, sem compra e venda; opção que não negociou no dia pode ter preço velho.")
     messenger.send("\n".join(L))
 
@@ -5166,7 +5183,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"realopcao": job_diag_realopcao, "qualopcao": job_diag_qualopcao, "histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"realopcao": job_diag_realopcao, "realopcao5": job_diag_realopcao5, "qualopcao": job_diag_qualopcao, "histopcao": job_diag_histopcao, "momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
