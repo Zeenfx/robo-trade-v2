@@ -2876,6 +2876,92 @@ def _diag_saida_opcao():
     L.append("\nEstimativa: IV constante, sem skew, vol histórica; é ordem de grandeza.")
     messenger.send("\n".join(L))
 
+def job_diag_momentum():
+    try:
+        _diag_momentum()
+    except Exception as e:
+        log.exception("diag_momentum falhou")
+        messenger.send(f"Teste de momentum falhou: {type(e).__name__}: {str(e)[:200]}")
+
+def _diag_momentum():
+    """Comando 'momentum' (so leitura): forca relativa entre os ativos do universo, 5 anos. Todo fim de mes ranqueia pelo retorno passado (12 meses sem o ultimo, e 6 meses sem o ultimo), segura os 5 primeiros no mes seguinte; compara com os ativos em media (igual peso) e com o BOVA11. Custo de 0,3% por mes na carteira. Viés de sobrevivencia: o universo e o de hoje."""
+    from messenger import fmt
+    api = Brapi(); CUSTO_MES = 0.003; TOP = 5
+    ser = {}
+    for t in config.UNIVERSE:
+        try:
+            dl = api.history(t, "5y", "1d")
+        except Exception as e:
+            log.warning("diag_momentum %s: %s", t, e); continue
+        if len(dl) < 400: continue
+        ser[t] = {datetime.fromtimestamp(b["date"], TZ).date(): b["close"] for b in dl}
+    if "BOVA11" not in ser or len(ser) < 10:
+        messenger.send("Momentum: sem dados suficientes."); return
+    datas = sorted(ser["BOVA11"])
+    N = len(datas); acoes = [t for t in ser if t != "BOVA11"]
+    # fecha com ffill; retorno diario com salto de mais de 25% tratado como evento corporativo (0)
+    cl = {}
+    for t in ser:
+        v, ult = [], None
+        for d in datas:
+            ult = ser[t].get(d, ult); v.append(ult)
+        cl[t] = v
+    def ret(t, a, b):   # retorno composto a..b com saltos neutralizados
+        v = cl[t]; r = 1.0
+        for k in range(a + 1, b + 1):
+            if v[k] is None or v[k - 1] is None: continue
+            x = v[k] / v[k - 1] - 1
+            if abs(x) > 0.25: x = 0.0
+            r *= 1 + x
+        return r - 1
+    fins = [i for i in range(1, N) if (datas[i].year, datas[i].month) != (datas[i - 1].year, datas[i - 1].month)]
+    fins = [i - 1 for i in fins]   # ultimo pregao de cada mes
+    meses = []
+    for j in range(len(fins) - 1):
+        a, b = fins[j], fins[j + 1]
+        if a < 260: continue
+        meses.append((a, b))
+    if len(meses) < 24:
+        messenger.send("Momentum: histórico curto demais."); return
+    def corre(lb):
+        res = []
+        for a, b in meses:
+            sc = []
+            for t in acoes:
+                if cl[t][a - lb] is None or cl[t][a] is None: continue
+                sc.append((ret(t, a - lb, a - 21), t))
+            if len(sc) < 10: continue
+            sc.sort(reverse=True)
+            top = [t for _, t in sc[:TOP]]
+            rt = sum(ret(t, a, b) for t in top) / len(top) - CUSTO_MES
+            ew = sum(ret(t, a, b) for _, t in sc) / len(sc)
+            res.append((rt, ew, ret("BOVA11", a, b), datas[b]))
+        return res
+    def resumo(res):
+        n = len(res)
+        def acum(i):
+            x = 1.0
+            for r in res: x *= 1 + r[i]
+            return x - 1
+        def dd(i):
+            x, pico, m = 1.0, 1.0, 0.0
+            for r in res:
+                x *= 1 + r[i]; pico = max(pico, x); m = min(m, x / pico - 1)
+            return m
+        sg = lambda v: ("+" if v >= 0 else "−") + fmt(abs(v) * 100, 0) + "%"
+        gb = sum(1 for r in res if r[0] > r[2]); ge = sum(1 for r in res if r[0] > r[1])
+        L = [f"  {n} meses · top {TOP}: acumulado {sg(acum(0))} (pior queda {sg(dd(0))}) · ativos em média: {sg(acum(1))} · BOVA11: {sg(acum(2))}",
+             f"  meses em que o top {TOP} ganhou do BOVA11: {fmt(100 * gb / n, 0)}% · dos ativos em média: {fmt(100 * ge / n, 0)}%"]
+        h = n // 2
+        for nome, parte in (("1ª metade", res[:h]), ("2ª metade", res[h:])):
+            gb2 = sum(1 for r in parte if r[0] > r[2]); m_t = sum(r[0] for r in parte) / len(parte); m_b = sum(r[2] for r in parte) / len(parte)
+            L.append(f"  {nome}: ganhou do BOVA11 em {fmt(100 * gb2 / len(parte), 0)}% dos meses · retorno mensal médio {sg(m_t)} contra {sg(m_b)} do BOVA11")
+        return L
+    L = ["FORÇA RELATIVA ENTRE OS ATIVOS (5 anos, só leitura)", f"{len(acoes)} ativos, compra dos {TOP} mais fortes no fim do mês, custo de 0,3% por mês. Universo de hoje: o resultado tem viés de sobrevivência e tende a parecer melhor do que seria.", ""]
+    for nome, lb in (("Retorno de 12 meses sem o último", 252), ("Retorno de 6 meses sem o último", 126)):
+        L.append(nome + ":"); L += resumo(corre(lb)); L.append("")
+    messenger.send("\n".join(L).rstrip())
+
 LISTA_DIARIA = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BBDC4"]
 # 17/11: o aviso ao vivo e a confirmacao das 18:10 da regra diaria (so CALL) cobrem o universo inteiro (teste de 5 anos: a vantagem aparece nos ~30 ativos); fora dos 6 principais, sem opcao liquida fica so registrado
 def _lista_diario_vivo():
@@ -4879,7 +4965,7 @@ def job_placar():
 
 def job_telegram_poll():
     """Le comandos do Telegram (comprei / vendi / posicoes / bomdia)."""
-    positions.EXTRA.update({"saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
+    positions.EXTRA.update({"momentum": job_diag_momentum, "saidaopcao": job_diag_saida_opcao, "alertas": job_diag_alertas, "bomdia": job_morning, "abertura": job_morning, "variacao": job_diag_variacao, "atrasos": job_diag_atrasos, "volume": job_diag_volume, "niveis": job_niveis, "usim5": job_explicar, "resultados": job_diag_resultados, "regras": job_diag_regras, "filtros": job_diag_filtros, "fatores": job_diag_fatores, "bova": job_diag_bova, "comparar": job_comparar, "dias": job_comparar_dias, "repique": job_diag_repique, "forte": job_diag_forte, "opcao": job_diag_opcao, "recuo": job_diag_recuo, "cenarios": job_diag_cenarios, "exemplos": job_diag_exemplos, "saidas": job_diag_saidas, "continuacao": job_diag_continuacao, "exemplos2": job_diag_exemplos2, "lista": job_diag_lista, "direcao": job_diag_direcao, "setores": job_diag_setores, "empilhar": job_diag_empilhar, "validar": job_diag_validar, "auditoria": job_diag_auditoria, "excursao": job_diag_excursao, "atraso": job_diag_atraso, "movido": job_diag_movido, "toque": job_diag_toque, "veredito": job_diag_veredito, "controle": job_diag_controle, "regime": job_diag_regime, "regimevivo": job_diag_regime_vivo, "macd": job_diag_macd, "macdvalida": job_diag_macd_valida, "macdopcao": job_diag_macd_opcao, "bovadiario": job_bova_manual, "intradia": job_diag_intradia, "calibra": job_diag_calibra, "calibra2": job_diag_calibra2, "calibra3": job_diag_calibra3, "validalinha": job_diag_valida_linha, "intradia2": job_diag_intradia2, "lateral": job_diag_lateral, "lateral2": job_diag_lateral2, "candles": job_gravar_candles_manual, "placar5m": job_placar_5m_manual, "linhas": job_diag_linhas, "linhas2": job_diag_linhas2, "linhas3": job_diag_linhas3, "escolha": job_diag_escolha, "escolha6": job_diag_escolha6, "bova3": job_diag_bova3, "puts": job_diag_puts, "putsfiltro": job_diag_puts_filtro, "candlesopcao": job_diag_candles_opcao, "hoje5m": job_diag_hoje5m})
     try:
         positions.poll(Brapi(), now().date())
     except Exception as e:
