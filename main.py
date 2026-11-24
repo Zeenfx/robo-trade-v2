@@ -4053,6 +4053,14 @@ def job_gravar_opcoes(manual=False):
                 if liq: L.append(f"Só séries com volume e interesse aberto de 100+ ({len(liq)}): mediana {fmt(q(liq, .5), 1)}% · pior 25% {fmt(q(liq, .75), 1)}%")
                 flt = sorted(((r["ask"] - r["bid"]) / ((r["ask"] + r["bid"]) / 2) * 100 for r in ok if (r["volume"] or 0) >= config.MIN_VOLUME and (r["oi"] or 0) >= config.MIN_OPEN_INTEREST))
                 L.append(f"Séries que passam o filtro do robô (volume {config.MIN_VOLUME}+, interesse aberto {config.MIN_OPEN_INTEREST}+): {len(flt)}" + (f" · spread mediana {fmt(q(flt, .5), 1)}% · pior 25% {fmt(q(flt, .75), 1)}% · dentro de {fmt(config.MAX_SPREAD_PCT, 0)}%: {sum(1 for x in flt if x <= config.MAX_SPREAD_PCT)}" if flt else ""))
+            tk_all = list(_tickers_5m())
+            def oper(r): return (r["bid"] or 0) > 0 and (r["ask"] or 0) >= r["bid"] and (r["ask"] - r["bid"]) / ((r["ask"] + r["bid"]) / 2) * 100 <= config.MAX_SPREAD_PCT and (r["volume"] or 0) >= config.MIN_VOLUME and (r["oi"] or 0) >= config.MIN_OPEN_INTEREST
+            for lado, nome in (("call", "CALL"), ("put", "PUT")):
+                com = sorted({r["ticker"] for r in linhas if r["side"] == lado and oper(r)})
+                fora = [t for t in tk_all if t not in com]
+                L.append(f"Ativos com série de {nome} operável (spread até {fmt(config.MAX_SPREAD_PCT, 0)}%, volume {config.MIN_VOLUME}+, interesse aberto {config.MIN_OPEN_INTEREST}+): {len(com)} de {len(tk_all)}")
+                L.append("  sim: " + (", ".join(com) or "nenhum"))
+                L.append("  não: " + (", ".join(fora) or "nenhum"))
         messenger.send("\n".join(L))
     except Exception as e:
         log.exception("gravar_opcoes falhou")
