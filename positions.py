@@ -51,6 +51,21 @@ def implied_vol(call, price, S, K, T):
     return (lo + hi) / 2
 
 
+def spot_para_ganho(call, entry, K, T, iv, spot0, pct=20.0):
+    """Preco da acao em que a opcao estimada (Black-Scholes, IV da compra, prazo da entrada) vale entry * (1 + pct/100). None se nao achar."""
+    if not iv or not spot0 or not entry: return None
+    meta = entry * (1 + pct / 100.0)
+    f = lambda S: max(bs(call, S, K, T, iv), (max(S - K, 0) if call else max(K - S, 0)))
+    lo, hi = (spot0, spot0 * 1.6) if call else (spot0 * 0.4, spot0)
+    if call and not (f(lo) < meta <= f(hi)): return None
+    if not call and not (f(hi) < meta <= f(lo)): return None
+    for _ in range(60):
+        m = (lo + hi) / 2
+        if call: lo, hi = (m, hi) if f(m) < meta else (lo, m)
+        else: lo, hi = (lo, m) if f(m) < meta else (m, hi)
+    return round((lo + hi) / 2, 2)
+
+
 def est_option(p, spot, today):
     """Preco estimado da opcao agora (Black-Scholes com a IV implicita na compra). Nunca abaixo do valor intrinseco."""
     call = p["direction"] == "long"
@@ -71,6 +86,7 @@ def _rows(c, where="status='open'", args=()):
 def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None, target=None, deadline=None, option=None, direction=None, level=None, origem="robo", iv=None):
     """Abre uma posicao. Sem dados explicitos, usa o ultimo alerta com opcao do ticker. Retorna (mensagem, id|None)."""
     ticker = ticker.upper()
+    alvo_do_usuario = target is not None or partial is not None
     with database.conn() as c:
         _ensure(c)
         if not option:
@@ -95,6 +111,10 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
             except Exception:
                 iv = None
         deadline = deadline or str(add_pregoes(today, config.TIME_EXIT_DAYS))
+        if origem == "robo" and not alvo_do_usuario:   # 26/11: venda unica em +20% sobre a compra (sem realizar metade); o aviso de saida e o stop seguem como antes
+            alvo20 = spot_para_ganho(call, price, option["strike"], T, iv, spot0)
+            if alvo20 and ((call and alvo20 > spot0) or (not call and alvo20 < spot0)):
+                target, partial = alvo20, None
         cur = c.execute("INSERT INTO positions(ticker,symbol,direction,strike,expiration,qty,qty0,entry,spot0,iv,stop,partial,target,deadline,opened,status,flags,realized,origem) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (ticker, option["symbol"], direction, option["strike"], option["expiration"], qty, qty, price, spot0, iv, stop, partial, target,
@@ -105,8 +125,7 @@ def open_position(ticker, qty, price, today, stop=None, spot0=None, partial=None
     return (f"✅ Posição registrada: {qty} {option['symbol']} a {fmt(price)} (R$ {fmt(qty * price, 0)}).\n"
             f"Vou avisar quando {ticker}:\n"
             f"• passar de {fmt(stop)} (sair)\n"
-            f"• chegar a {fmt(partial)} (realizar metade)\n"
-            f"• chegar ao alvo {fmt(target)}\n"
+            + (f"• chegar a {fmt(target)} (vender tudo: opção estimada em +20%)\n" if partial is None else f"• chegar a {fmt(partial)} (realizar metade)\n• chegar ao alvo {fmt(target)}\n") +
             f"• e no prazo, {dl}" + (" (10 pregões)." if origem == "robo" else " (perto do vencimento).")), pid
 
 
@@ -191,7 +210,7 @@ def listar(api, today):
             B += [f"Valor atual: ~R$ {fmt(est * p['qty'], 0)} (estimado)", f"Resultado: {'▲' if res >= 0 else '▼'} {sg}R$ {fmt(abs(res), 0)} ({sg}{fmt(abs(pct), 0)}%)", "", f"Ação: {fmt(px)}"]
         if p["realized"]:
             B.insert(2, f"Já realizado: {'+' if p['realized'] >= 0 else '−'}R$ {fmt(abs(p['realized']), 0)}")
-        B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}",
+        B += [f"Sair se: {'acima' if short else 'abaixo'} de {fmt(p['stop'])}", (f"Vender tudo em: {fmt(p['target'])} (opção +20%)" if p["partial"] is None else f"Metade: {fmt(p['partial'])} · Alvo: {fmt(p['target'])}"),
               f"Prazo: {datetime.strptime(p['deadline'], '%Y-%m-%d').strftime('%d/%m')}"]
         blocos.append("\n".join(B))
     if len(rows) > 1 and tot_ap:
@@ -302,8 +321,8 @@ def check(api, now_dt):
             msgs.append(f"🛑 SAIR: {info}\nA ação {'passou de' if short else 'caiu abaixo de'} {fmt(p['stop'])} e está em {fmt(px)}. Sair de {p['symbol']} ({p['qty']}). Confira o bid no Profit.")
         elif "alvo" not in flags and reach(p["target"]):
             flags += ["alvo", "parcial"]
-            msgs.append(f"🎯 ALVO: {info}\nA ação chegou ao alvo {fmt(p['target'])}. Realizar o restante de {p['symbol']} ({p['qty']}).")
-        elif "parcial" not in flags and reach(p["partial"]):
+            msgs.append(f"🎯 ALVO: {info}\nA ação chegou ao alvo {fmt(p['target'])}. " + (f"Vender tudo de {p['symbol']} ({p['qty']}): a opção deve estar perto de +20%. Confira o bid no Profit." if p["partial"] is None else f"Realizar o restante de {p['symbol']} ({p['qty']})."))
+        elif "parcial" not in flags and p["partial"] is not None and reach(p["partial"]):
             flags.append("parcial")
             txt = f"🎯 REALIZAR METADE: {info}\nA ação chegou a {fmt(p['partial'])}. Vender {p['qty'] // 2} de {p['symbol']} e deixar o resto até o alvo {fmt(p['target'])}."
             prot = nivel_protegido(p, today) if est > p["entry"] else None
@@ -405,12 +424,12 @@ def ajustar(ident, stop=None, alvo=None, metade=None):
             return f"Não há posição aberta em {ident}."
         p = rows[-1]
         novo = dict(stop=stop or p["stop"], target=alvo or p["target"], partial=metade or p["partial"])
-        if alvo and not metade:      # metade acompanha o alvo: 60% do caminho
+        if alvo and not metade and p["partial"] is not None:      # metade acompanha o alvo: 60% do caminho (posicao de venda unica nao tem metade)
             novo["partial"] = round(p["spot0"] + 0.6 * (alvo - p["spot0"]), 2)
         flags = [f for f in json.loads(p["flags"] or "[]") if not ((stop and f == "stop") or (alvo and f in ("alvo", "parcial")) or (metade and f == "parcial"))]
         c.execute("UPDATE positions SET stop=?, target=?, partial=?, flags=? WHERE id=?", (novo["stop"], novo["target"], novo["partial"], json.dumps(flags), p["id"]))
     lado = "acima de" if p["direction"] == "short" else "abaixo de"
-    return (f"✅ {p['symbol']} ajustada:\n• sair se {lado} {fmt(novo['stop'])}\n• metade em {fmt(novo['partial'])}\n• alvo {fmt(novo['target'])}")
+    return (f"✅ {p['symbol']} ajustada:\n• sair se {lado} {fmt(novo['stop'])}\n" + (f"• metade em {fmt(novo['partial'])}\n" if novo["partial"] is not None else "") + f"• alvo {fmt(novo['target'])}")
 
 
 def _ticker_de(ident):

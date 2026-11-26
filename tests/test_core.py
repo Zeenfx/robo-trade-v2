@@ -571,7 +571,7 @@ def test_posicoes_comandos_e_avisos(monkeypatch, tmp_path):
     sig = dict(ticker="CSAN3", direction="short", price=2.51, level=2.60, stop=2.81, target=1.91)
     opt = dict(symbol="CSANX285", strike=2.85, expiration="2026-12-18", dte=51)
     database.save_alert("2026-10-28", "CSAN3", "short", "2026-10-28T11:00:00", {"signal": sig, "option": opt, "reason": ""})
-    r = positions.handle("comprei CSAN3 500 a 0,44 stop 2,65", today)
+    r = positions.handle("comprei CSAN3 500 a 0,44 stop 2,65 alvo 1,91", today)   # alvo do usuario: mantem metade + alvo (a venda unica em +20% tem teste proprio)
     assert "Posição registrada" in r and "2,65" in r and "2,15" in r and "12/11" in r
     assert "Nenhuma posição" not in positions.listar(type("A", (), {"history": lambda s, *a: []})(), today)
     class A2:
@@ -725,7 +725,7 @@ def test_concentracao_protecao_e_resumo(monkeypatch, tmp_path):
     today = date(2026, 10, 28)
     sig0 = dict(ticker="CSAN3", direction="short", price=2.51, level=2.60, stop=2.81, target=1.91)
     database.save_alert("2026-10-28", "CSAN3", "short", "2026-10-28T11:00:00", {"signal": sig0, "option": dict(symbol="CSANX285", strike=2.85, expiration="2026-12-18", dte=51), "reason": ""})
-    positions.handle("comprei CSAN3 500 a 0,44", today)
+    positions.handle("comprei CSAN3 500 a 0,44 alvo 1,91", today)   # alvo do usuario: mantem metade + alvo
     assert positions.contar_abertas() == {"short": 1, "long": 0}
     sig = N(direction="short", ticker="GGBR4", level=24.0, price=23.8, target=22.2, stop=24.5)
     opt = dict(symbol="GGBRX251", strike=24.87, expiration="2026-12-18", ask=1.6, bid=1.6, max_loss_per_lot=160, dte=51, lot=100)
@@ -868,3 +868,26 @@ def test_linha_balancos_bom_dia():
     # 03/11: o dia 02/11 (feriado) e pulado
     assert balancos._pregao_anterior(date(2026, 11, 3)) == date(2026, 10, 30)
     assert balancos.linha_bom_dia(["VALE3"], date(2026, 11, 11)) == ""
+
+
+def test_posicao_venda_unica_em_20_por_cento(monkeypatch, tmp_path):
+    import positions
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "u.db"))
+    sent = []
+    monkeypatch.setattr(messenger, "send", lambda t: sent.append(t) or True)
+    today = date(2026, 11, 25)
+    sig = dict(ticker="VALE3", direction="long", price=57.13, level=55.0, stop=56.0, target=60.0)
+    opt = dict(symbol="VALEA593", strike=59.39, expiration="2027-01-15", dte=51)
+    database.save_alert("2026-11-25", "VALE3", "long", "2026-11-25T16:36:00", {"signal": sig, "option": opt, "reason": ""})
+    r = positions.handle("comprei VALEA593 200 a 2,05", today)
+    assert "vender tudo" in r and "realizar metade" not in r
+    with database.conn() as c:
+        p = [dict(x) for x in c.execute("SELECT * FROM positions").fetchall()][0]
+    assert p["partial"] is None and 57.5 < p["target"] < 59.5
+    assert abs(positions.est_option(p, p["target"], today) / 2.05 - 1.2) < 0.03
+    class Api:
+        def history(s, t, r, i): return [dict(date=datetime(2026, 11, 26, 11, 0, tzinfo=TZ).timestamp(), close=p["target"] + 0.05)]
+    positions.check(Api(), datetime(2026, 11, 26, 11, 5, tzinfo=TZ))
+    assert len(sent) == 1 and "Vender tudo de VALEA593" in sent[0] and "REALIZAR METADE" not in sent[0]
+    assert "Vender tudo em:" in positions.listar(Api(), date(2026, 11, 26))
+    assert "metade" not in positions.handle("ajustar VALEA593 alvo 59,5", date(2026, 11, 26))
